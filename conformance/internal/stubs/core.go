@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"example.com/tests-studio/conformance/internal/proto"
-	"example.com/tests-studio/conformance/internal/schemas"
+	"github.com/saphan-ai/tests-studio/conformance/internal/proto"
+	"github.com/saphan-ai/tests-studio/conformance/internal/schemas"
 )
 
 // Mode says whether the adapter runs on its own or inside a Saphan leg's run.

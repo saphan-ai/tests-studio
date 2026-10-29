@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/tests-studio/conformance/internal/harness"
-	"example.com/tests-studio/conformance/internal/schemas"
-	"example.com/tests-studio/conformance/internal/stubs"
+	"github.com/saphan-ai/tests-studio/conformance/internal/harness"
+	"github.com/saphan-ai/tests-studio/conformance/internal/schemas"
+	"github.com/saphan-ai/tests-studio/conformance/internal/stubs"
 )
 
 // requireSocketsEnv turns the skip of a socket test into a failure. The master sets it when it
@@ -36,7 +36,7 @@ func needLoopback(t *testing.T) {
 func buildSampleAdapter(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "sample-adapter")
-	cmd := exec.Command("go", "build", "-o", bin, "example.com/tests-studio/conformance/cmd/sample-adapter")
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/saphan-ai/tests-studio/conformance/cmd/sample-adapter")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build of the sample adapter: %v\n%s", err, out)
 	}

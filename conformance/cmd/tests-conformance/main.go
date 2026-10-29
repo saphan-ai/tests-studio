@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"os"
 
-	"example.com/tests-studio/conformance/internal/harness"
-	"example.com/tests-studio/conformance/internal/schemas"
-	"example.com/tests-studio/conformance/internal/stubs"
+	"github.com/saphan-ai/tests-studio/conformance/internal/harness"
+	"github.com/saphan-ai/tests-studio/conformance/internal/schemas"
+	"github.com/saphan-ai/tests-studio/conformance/internal/stubs"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }

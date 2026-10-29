@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/tests-studio/conformance/internal/checks"
-	"example.com/tests-studio/conformance/internal/harness"
-	"example.com/tests-studio/conformance/internal/sampleadapter"
-	"example.com/tests-studio/conformance/internal/schemas"
-	"example.com/tests-studio/conformance/internal/stubs"
+	"github.com/saphan-ai/tests-studio/conformance/internal/checks"
+	"github.com/saphan-ai/tests-studio/conformance/internal/harness"
+	"github.com/saphan-ai/tests-studio/conformance/internal/sampleadapter"
+	"github.com/saphan-ai/tests-studio/conformance/internal/schemas"
+	"github.com/saphan-ai/tests-studio/conformance/internal/stubs"
 )
 
 const sampleItems = 3

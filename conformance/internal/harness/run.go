@@ -9,10 +9,10 @@ import (
 
 	"time"
 
-	"example.com/tests-studio/conformance/internal/checks"
-	"example.com/tests-studio/conformance/internal/proto"
-	"example.com/tests-studio/conformance/internal/schemas"
-	"example.com/tests-studio/conformance/internal/stubs"
+	"github.com/saphan-ai/tests-studio/conformance/internal/checks"
+	"github.com/saphan-ai/tests-studio/conformance/internal/proto"
+	"github.com/saphan-ai/tests-studio/conformance/internal/schemas"
+	"github.com/saphan-ai/tests-studio/conformance/internal/stubs"
 )
 
 // Exit codes of the runner (specification section "Running the suite").
