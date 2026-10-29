@@ -18,6 +18,11 @@
     {
       "name": "TestSkipped",
       "outcome": "skip"
+    },
+    {
+      "name": "TestFixtureFails",
+      "outcome": "error",
+      "failure": "fixture setup failed (database unreachable): the test body never ran"
     }
   ]
 }

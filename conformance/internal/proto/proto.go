@@ -54,7 +54,13 @@ const (
 	ReasonEvidenceKind     = "evidence-kind-unknown"
 	ReasonEventInvalid     = "event-invalid"
 	ReasonEventSchema      = "event-schema-unknown"
+	ReasonResultMismatch   = "run-result-mismatch" // v1.1, ruling 1: the close disagrees with the core's own tally
 )
+
+// ReasonMocksCoreMismatch is an ADAPTER-side refusal (v1.1, ruling 9), never a core answer: the
+// adapter stops by this name when MOCKS_CORE_URL and the open answer's mocks_core_url name
+// different services.
+const ReasonMocksCoreMismatch = "mocks-core-mismatch"
 
 // Step results, and evidence kinds.
 var (

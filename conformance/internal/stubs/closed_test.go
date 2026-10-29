@@ -48,7 +48,10 @@ func TestClosedTestRunCredentialIsRefusedAsInvalid(t *testing.T) {
 	if before := do("POST", base+"/steps", o.Credential, `{"step_id":"s1","name":"n"}`); before.Code != http.StatusCreated {
 		t.Fatalf("a live credential was refused %d: %s", before.Code, before.Body.String())
 	}
-	closeBody := `{"verdict":"pass","counts":{"total":0,"passed":0,"failed":0,"errored":0,"skipped":0},"started_at":"2026-10-29T04:10:00.000Z","ended_at":"2026-10-29T04:10:01.000Z","adapter":{"name":"a","version":"1","spec":"v1"}}`
+	if res := do("POST", base+"/step-results", o.Credential, `{"step_id":"s1","result":"pass","duration_ms":1}`); res.Code != http.StatusNoContent {
+		t.Fatalf("a result was refused %d: %s", res.Code, res.Body.String())
+	}
+	closeBody := `{"verdict":"pass","counts":{"total":1,"passed":1,"failed":0,"errored":0,"skipped":0},"started_at":"2026-10-29T04:10:00.000Z","ended_at":"2026-10-29T04:10:01.000Z","adapter":{"name":"a","version":"1","spec":"v1"}}`
 	if closed := do("POST", base+"/close", o.Credential, closeBody); closed.Code != http.StatusOK {
 		t.Fatalf("close answered %d: %s", closed.Code, closed.Body.String())
 	}

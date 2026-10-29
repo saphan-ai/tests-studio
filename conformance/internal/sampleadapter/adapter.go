@@ -34,11 +34,24 @@ const (
 	MutantCredentialSummary = "credential-in-summary"
 	MutantMockControlDirect = "mock-control-direct"
 	MutantSecondRunInLeg    = "second-run-in-leg"
-	adapterName             = "sample-adapter"
-	adapterVersion          = "1.0.0"
-	httpTimeout             = 30 * time.Second
-	timeLayout              = "2006-01-02T15:04:05.000Z"
-	maxResponseBytes        = 8 << 20
+
+	// The mutants of v1.1; each one breaks the rule of the ruling named beside it.
+	MutantCountsMismatch   = "counts-mismatch"          // ruling 1: close with counts the core's tally contradicts
+	MutantDuplicateStepID  = "duplicate-step-id"        // ruling 3: a second start of a step_id
+	MutantRetryNewStep     = "retry-as-new-step"        // ruling 4: a retry becomes a second step
+	MutantNeverRanNoStep   = "never-ran-without-step"   // ruling 5: an item whose body never ran gets no step
+	MutantEvidenceUnknown  = "evidence-unstarted-step"  // ruling 6: evidence for a step that was never started
+	MutantRunClosedLate    = "run-closed-after-close"   // ruling 7: run.closed emitted after closeTestRun
+	MutantConcurrentAttach = "concurrent-attach-in-leg" // ruling 12: an attach while a test run is attached
+	MutantSampleNoSkip     = "sample-without-skip"      // ruling 14: a sample project with no skipped test
+	MutantRetryRefused     = "retry-refused-call"       // ruling 15: a refused call sent again unchanged
+	MutantEventIDReused    = "event-id-reused"          // ruling 16: one event_id on two different events
+
+	adapterName      = "sample-adapter"
+	adapterVersion   = "1.0.0"
+	httpTimeout      = 30 * time.Second
+	timeLayout       = "2006-01-02T15:04:05.000Z"
+	maxResponseBytes = 8 << 20
 )
 
 // Project is the sample project file.
@@ -50,7 +63,7 @@ type Project struct {
 // Item is one test of the sample project.
 type Item struct {
 	Name     string    `json:"name"`
-	Outcome  string    `json:"outcome"` // pass, fail or skip
+	Outcome  string    `json:"outcome"` // pass, fail, error or skip; error stands for an item whose body never ran
 	Failure  string    `json:"failure,omitempty"`
 	CallsSUT bool      `json:"calls_sut,omitempty"`
 	Evidence string    `json:"evidence,omitempty"`
@@ -125,7 +138,17 @@ func (a *adapter) run(proj Project) error {
 	}
 	var counts proto.Counts
 	for i, it := range proj.Tests {
-		a.runItem(i, it, &counts)
+		if a.mutant == MutantSampleNoSkip && it.Outcome == "skip" {
+			it.Outcome = "pass" // breaks one rule: a sample project with no skipped test
+		}
+		if a.mutant == MutantNeverRanNoStep && it.Outcome == "error" {
+			continue // breaks one rule: an item whose body never ran is left without a step
+		}
+		stepID := fmt.Sprintf("s%d-%s", i+1, it.Name)
+		a.runItem(i, stepID, it, &counts)
+		if a.mutant == MutantRetryNewStep && it.Outcome == "fail" {
+			a.runItem(i, stepID+"-retry", it, &counts) // breaks one rule: a retry is a second step
+		}
 	}
 	return a.finish(counts)
 }
@@ -162,7 +185,19 @@ func (a *adapter) open(proj Project) error {
 	var err error
 	if legRun != "" {
 		a.runCred = legToken
-		status, err = a.call("POST", a.coreURL+"/v1/runs/"+legRun+"/test-runs", legToken, hdr, proto.OpenRequest{Project: proj.Project}, &a.opened)
+		attachURL := a.coreURL + "/v1/runs/" + legRun + "/test-runs"
+		if a.mutant == MutantRetryRefused {
+			// Breaks one rule: the core refuses this attach (the id is malformed), and the adapter
+			// sends the very same request again instead of accepting the decision.
+			bad := proto.OpenRequest{Project: proj.Project, TestRunID: "X"}
+			_, _ = a.call("POST", attachURL, legToken, hdr, bad, nil)
+			_, _ = a.call("POST", attachURL, legToken, hdr, bad, nil)
+		}
+		status, err = a.call("POST", attachURL, legToken, hdr, proto.OpenRequest{Project: proj.Project}, &a.opened)
+		if a.mutant == MutantConcurrentAttach {
+			// Breaks one rule: a second attach while the first test run is still attached.
+			_, _ = a.call("POST", attachURL, legToken, hdr, proto.OpenRequest{Project: proj.Project}, nil)
+		}
 		if a.mutant == MutantSecondRunInLeg {
 			// Breaks one rule: a leg's run is the only run; the adapter opens a second one anyway.
 			_, _ = a.call("POST", a.coreURL+"/v1/test-runs", "", hdr, proto.OpenRequest{Project: proj.Project, Mocks: []string{"sample-http"}}, nil)
@@ -177,6 +212,12 @@ func (a *adapter) open(proj Project) error {
 	if status != http.StatusCreated {
 		return errors.New("the core refused to open or attach the test run (see the refusal above)")
 	}
+	// Ruling 9 of v1.1: MOCKS_CORE_URL and the answer's mocks_core_url name one service; when
+	// they differ the adapter refuses by name rather than choosing one.
+	if env := a.env[proto.EnvMocksURL]; env != "" && env != a.opened.MocksCoreURL {
+		return fmt.Errorf("refused [%s]: %s is %q and the core's answer names %q; they must name one Mocks Studio core",
+			proto.ReasonMocksCoreMismatch, proto.EnvMocksURL, env, a.opened.MocksCoreURL)
+	}
 	summary := "test run opened for project " + proj.Project
 	if a.mutant == MutantCredentialSummary {
 		summary += " with credential " + a.opened.Credential // breaks one rule: a credential in a summary
@@ -185,37 +226,50 @@ func (a *adapter) open(proj Project) error {
 	return nil
 }
 
-func (a *adapter) runItem(i int, it Item, counts *proto.Counts) {
-	stepID := fmt.Sprintf("s%d-%s", i+1, it.Name)
+// runItem turns one test item into one step: one start, one result carrying the item's final
+// outcome. The counts it fills are the core's own rule (v1.1, ruling 1): a step is counted when
+// the core accepted its start, a result when the core accepted it.
+func (a *adapter) runItem(i int, stepID string, it Item, counts *proto.Counts) {
 	var ss proto.StepStarted
-	if _, err := a.call("POST", a.testRunURL()+"/steps", a.opened.Credential, nil, proto.StartStepRequest{StepID: stepID, Name: it.Name}, &ss); err != nil || ss.Traceparent == "" {
+	status, err := a.call("POST", a.testRunURL()+"/steps", a.opened.Credential, nil, proto.StartStepRequest{StepID: stepID, Name: it.Name}, &ss)
+	if a.mutant == MutantDuplicateStepID && i == 2 {
+		// Breaks one rule: the step_id is started a second time (the core refuses it, 409).
+		_, _ = a.call("POST", a.testRunURL()+"/steps", a.opened.Credential, nil, proto.StartStepRequest{StepID: stepID, Name: it.Name}, nil)
+	}
+	if err != nil || status != http.StatusCreated || ss.Traceparent == "" {
 		a.failures++
 		return
 	}
+	counts.Total++
 	a.emit("step.started", stepID, ss.CorrelationID, "step "+it.Name+" started", "", nil)
 	t0 := time.Now()
 	a.setScenario(it)
 	a.callSUT(it, ss)
-	a.attachEvidence(it, stepID, ss.CorrelationID, i == 0)
 	result := it.Outcome
-	counts.Total++
-	switch result {
-	case "pass":
-		counts.Passed++
-	case "fail":
-		counts.Failed++
-	case "skip":
-		counts.Skipped++
-	}
 	duration := time.Since(t0).Milliseconds()
 	res := proto.StepResult{StepID: &stepID, Result: result, DurationMS: &duration, Failure: it.Failure}
 	if a.mutant == MutantResultNoStepID && i == 0 {
-		res.StepID = nil // breaks one rule: a result without its step_id
+		// Breaks one rule: a result without its step_id. The core refuses it; the adapter then
+		// sends the right one, so the tally stays closable and only this rule is broken.
+		_, _ = a.call("POST", a.testRunURL()+"/step-results", a.opened.Credential, nil, proto.StepResult{Result: result, DurationMS: &duration, Failure: it.Failure}, nil)
 	}
-	if _, err := a.call("POST", a.testRunURL()+"/step-results", a.opened.Credential, nil, res, nil); err != nil {
+	status, err = a.call("POST", a.testRunURL()+"/step-results", a.opened.Credential, nil, res, nil)
+	switch {
+	case err != nil || status != http.StatusNoContent:
 		a.failures++
+	case result == "pass":
+		counts.Passed++
+	case result == "fail":
+		counts.Failed++
+	case result == "error":
+		counts.Errored++
+	case result == "skip":
+		counts.Skipped++
 	}
 	a.emit("step.finished", stepID, ss.CorrelationID, "step "+it.Name+" finished: "+result, result, nil)
+	// Ruling 6 of v1.1: evidence needs a started step and may be attached once it is finished
+	// (a video or a trace is complete only after the test), so it is attached here.
+	a.attachEvidence(it, stepID, ss.CorrelationID, i == 0)
 	if it.Scenario != nil && a.mutant != MutantMockControlDirect {
 		a.callMocks("POST", "/reset", nil)
 	}
@@ -265,7 +319,11 @@ func (a *adapter) attachEvidence(it Item, stepID, corr string, first bool) {
 		other := sha256.Sum256([]byte("different bytes")) // breaks one rule: the digest is not the bytes'
 		declared = hex.EncodeToString(other[:])
 	}
-	hdr := map[string]string{proto.HeaderEvidenceKind: "log", proto.HeaderStepID: stepID, "Content-Type": "text/plain"}
+	hdrStep := stepID
+	if a.mutant == MutantEvidenceUnknown && first {
+		hdrStep = "no-such-step" // breaks one rule: evidence for a step that was never started
+	}
+	hdr := map[string]string{proto.HeaderEvidenceKind: "log", proto.HeaderStepID: hdrStep, "Content-Type": "text/plain"}
 	if _, err := a.rawCall("PUT", a.testRunURL()+"/evidence/"+declared, a.opened.Credential, hdr, data, nil); err != nil {
 		a.failures++
 		return
@@ -290,6 +348,9 @@ func (a *adapter) emit(kind, stepID, corr, summary, outcome string, payload map[
 	if payload != nil {
 		ev["payload"] = payload
 	}
+	if a.mutant == MutantEventIDReused && a.events == 3 {
+		ev["event_id"] = fmt.Sprintf("%s-evt-%03d", a.opened.TestRunID, 1) // breaks one rule: the id of the first event on a different event
+	}
 	if a.mutant == MutantEventNoRunID && kind == "step.started" && a.events == 2 {
 		delete(ev, "run_id") // breaks one rule: an event without run_id
 	}
@@ -301,15 +362,28 @@ func (a *adapter) emit(kind, stepID, corr, summary, outcome string, payload map[
 // finish closes the test run, publishes the run result and prints the evidence line.
 func (a *adapter) finish(counts proto.Counts) error {
 	verdict := proto.VerdictOf(counts)
-	a.emit("run.closed", "", "", "test run closed with verdict "+verdict, verdict, nil)
+	if a.mutant != MutantRunClosedLate {
+		a.emit("run.closed", "", "", "test run closed with verdict "+verdict, verdict, nil)
+	}
 	var rr proto.RunResult
 	req := proto.CloseRequest{
 		Verdict: verdict, Counts: counts, StartedAt: a.started.Format(timeLayout), EndedAt: time.Now().UTC().Format(timeLayout),
 		Adapter: proto.Identity{Name: adapterName, Version: adapterVersion, Spec: a.spec},
 	}
+	if a.mutant == MutantCountsMismatch {
+		// Breaks one rule: counts that are not the core's tally. The core refuses; the adapter
+		// then closes with the right counts, so the run result itself stays correct.
+		wrong := req
+		wrong.Counts.Total++
+		_, _ = a.call("POST", a.testRunURL()+"/close", a.opened.Credential, nil, wrong, nil)
+	}
 	status, err := a.call("POST", a.testRunURL()+"/close", a.opened.Credential, nil, req, &rr)
 	if err != nil {
 		return err
+	}
+	if a.mutant == MutantRunClosedLate {
+		// Breaks one rule: run.closed after closeTestRun. Closing revoked the credential, so the core refuses it.
+		a.emit("run.closed", "", "", "test run closed with verdict "+verdict, verdict, nil)
 	}
 	if status != http.StatusOK {
 		return errors.New("the core refused to close the test run (see the refusal above)")
