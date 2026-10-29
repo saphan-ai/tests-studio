@@ -1,4 +1,4 @@
-# Test runner specification, version 1
+# Test runner specification, version 1.1
 
 This document tells you how to write a **runner adapter**: a small piece of code that makes a test
 framework (pytest, Playwright, Go's `testing`, anything) report to a Tests Studio core. You do not
@@ -7,6 +7,12 @@ the conformance suite in `conformance/` against your adapter, and **an adapter i
 suite passes against it**.
 
 The key words MUST, MUST NOT and MAY are used in their usual sense.
+
+**Version 1.1 clarifies version 1; it does not replace it.** The wire protocol is still spec
+version `v1` (the string in `Tests-Spec-Version`, `emitter.spec` and `adapter.spec` does not
+change), every v1.1 rule is additive except where section 14 says otherwise, and every rule
+a v1 adapter already followed still holds. Section 14 lists what v1.1 states, with the number of
+each ruling.
 
 ## 1. What an adapter does
 
@@ -39,6 +45,11 @@ through the **Mocks Studio core**, never through the mock itself (section 8).
 A test item becomes exactly one step. A step MAY span several correlation ids in the system
 under test; a correlation id never belongs to two steps.
 
+An `event_id` is unique **within its test run**: it names one event, and the events of a test run
+form a **set** keyed by it, as the `events_digest` of section 7 already treats them. Sending the
+same document under the same `event_id` again is the same event; sending a different event under
+an `event_id` already used is a defect (ruling 16).
+
 ## 3. Versions
 
 The core serves a list of spec versions (this document is `v1`). The adapter:
@@ -67,7 +78,22 @@ a removed field or a changed meaning is `v2`.
 
 The adapter takes the leg's run id and credential from the environment and **never opens a second
 run inside a leg**: the leg's code was started with the leg's endpoints, so a run opened inside it
-could not have endpoints of its own.
+could not have endpoints of its own. A core refuses an open inside a leg with `403
+run-open-not-allowed` (section 6); an adapter that finds `MOCKS_RUN_ID` set attaches and never
+sends the open call at all (ruling 11).
+
+**Handing a test run to a child process (ruling 8).** An adapter whose test workers or framework
+plugins run in child processes passes them what they need to report into the same test run. The
+ids (`run_id`, `test_run_id`, `step_id`) are **not secrets** and may travel in the environment,
+a command line or a file. Only the credential is a secret: it travels in `TESTS_RUN_TOKEN` in the
+child's environment, never on a command line and never in a file the child does not own.
+
+**One Mocks Studio core (ruling 9).** Inside a leg the adapter finds the Mocks Studio core in two
+places: `MOCKS_CORE_URL` and the `mocks_core_url` of the attach answer. Both name **one**
+service. When they differ the adapter does not choose: it stops and refuses by the name
+`mocks-core-mismatch`, saying both values. (This is an adapter-side refusal, not a core reason
+code; section 10 lists it apart.) Standalone, the open answer's `mocks_core_url` is the only
+source.
 
 ## 5. The credential
 
@@ -91,7 +117,7 @@ The full shape is `runner-v1.openapi.yaml` (OpenAPI 3.1). In order:
 | call | operation | purpose |
 |---|---|---|
 | `GET /v1/spec` | `getSpec` | the served spec versions; no credential |
-| `POST /v1/test-runs` | `openTestRun` | open a standalone test run: `{project, mocks[], test_run_id?}`; answers ids, endpoints and credentials; no credential needed |
+| `POST /v1/test-runs` | `openTestRun` | open a standalone test run: `{project, mocks[]?, test_run_id?}` (`mocks` is optional: a run without mocks is legal); answers ids, endpoints and credentials; no credential needed |
 | `POST /v1/runs/{run_id}/test-runs` | `attachTestRun` | attach to a leg's run: `{project, test_run_id?, reset?}`; carries the leg's run credential; answers like `openTestRun` without `run_credential` |
 | `POST /v1/test-runs/{id}/steps` | `startStep` | `{step_id, name}`; answers `{step_id, correlation_id, traceparent, baggage}` |
 | `POST /v1/test-runs/{id}/step-results` | `finishStep` | `{step_id, result, duration_ms, failure?}`; `result` is `pass`, `fail`, `error` or `skip`; `failure` text is required for `fail` and `error` |
@@ -105,8 +131,23 @@ credential the adapter presented (ecosystem contract sections 1 and 6). A Tests 
 therefore verifies the leg's run credential by presenting it to the Mocks Studio core, and neither
 keeps nor logs it.
 
-Opening **inside a leg** is refused `403 run-open-not-allowed`. A second attach while one is
-attached is refused `409 run-attached`.
+Opening **inside a leg** is refused `403 run-open-not-allowed`; this is the one rule and the one
+code for it (section 4 says only that the adapter does not try).
+
+**One test run attached at a time, any number in sequence (ruling 12).** A leg's run may hold
+several test runs one after another (a retry after a fix), each with a clean history. A second
+attach **while one is attached** is refused `409 run-attached`. After `closeTestRun` the run is no
+longer attached: a new attach with a **new** `test_run_id` is accepted. The conformance check
+`no-second-run` counts only attaches made while a test run is attached.
+
+**One opener per test run, and parallel workers (ruling 3).** Exactly one party opens or attaches
+a test run: the adapter's coordinating process. Workers of a parallel framework (pytest-xdist,
+Playwright workers, `go test` packages) do not open or attach of their own; the adapter hands each
+the test run's id and credential (section 4) and serialises or coordinates their calls. Every
+`step_id` is unique within the test run, whichever worker starts it. If two workers start the
+same `step_id`, the core accepts the first and refuses the second `409 step-already-started`; the
+adapter treats that as its own defect and reports the item that lost the race as `error`, with
+failure text saying so, under a `step_id` of its own that is unique (section 6.1).
 
 ### 6.1 Steps and the traceparent
 
@@ -119,11 +160,30 @@ as the `traceparent` and `baggage` HTTP headers, unchanged. The trace-id **is** 
 Every test item becomes exactly one step: one `startStep`, one `finishStep`, a `step_id` that is
 unique in the test run. The result of a step is exactly one of `pass`, `fail`, `error`, `skip`.
 
+**Retries (ruling 4).** A framework that retries an item (a flaky-test plugin, Playwright's
+`retries`) still reports **one step per item**, finished **once** with the item's **final**
+outcome. Earlier attempts are not steps. The adapter MAY keep them visible: as evidence of the
+step (section 6.2) or as events of its own kind `x-<adapter>.attempt` (section 9.2). This keeps
+`--items` equal to the number of items and the counts equal to the number of steps.
+
+**An item whose body never ran (ruling 5).** A fixture that failed, a timeout before the body
+started, an abort of the run: the item is still accounted for. It becomes one step, finished with
+result `error` and failure text that names why (fixture, timeout, abort). It is never left
+without a step and never reported as `skip`, which means the test chose not to run.
+
 ### 6.2 Evidence
 
 Evidence is content-addressed. The path carries the lowercase hex SHA-256 of the exact bytes in
 the body. The core recomputes the digest and refuses bytes that do not match with `422
 evidence-digest-mismatch`. Evidence belongs to a step (`Tests-Step-Id`).
+
+**The step must be started and accepted; it may be finished (ruling 6).** The core accepts
+evidence for any step it accepted a start for, whether or not that step already has its result.
+Videos and traces are complete only after the test ends, so an adapter MAY attach them after
+`finishStep`. Evidence for a step the core never accepted is refused `422 step-unknown`.
+
+**Evidence is mandatory (ruling 14).** A conforming run attaches at least one evidence item
+(a log is enough). An adapter that has nothing else to attach attaches the log of the run.
 
 ## 7. The run result
 
@@ -141,10 +201,20 @@ Fields: `run_id`, `test_run_id`, `project`, `verdict` (`pass`, `fail`, `error`),
   kind; they sum to `total`.
 - **Verdict.** `error` if any step errored, else `fail` if any failed, else `pass`. A skipped step
   never fails a run.
-- **`events_digest`.** SHA-256 over the event ids of the Mocks Studio core's events that carry this
-  `test_run_id`, as that core holds them (ecosystem contract section 6). The core computes it; the
-  adapter copies it and MUST NOT change it. The byte layout, which every product that computes or
-  verifies a digest MUST follow:
+- **The core is the authority (ruling 1).** At `closeTestRun` the core **re-tallies** the test run
+  from what it accepted: `total` is the steps whose start it accepted, and each of the four others
+  is the results it accepted of that kind. A result the core refused (a `422`, a `409`) is **not**
+  counted. The core compares the adapter's `verdict` and `counts` with its tally and refuses a close
+  that differs, **`422 run-result-mismatch`**, naming its own tally in the message; it does the same
+  while a started step still has no accepted result. A refused close leaves the test run open and
+  its credential live, so the adapter can close again with the right tally. The adapter therefore
+  counts what the core accepted, not what it meant to send. Only a close the core accepted yields a
+  run result.
+- **`events_digest` is copied (ruling 2).** SHA-256 over the event ids of the Mocks Studio core's
+  events that carry this `test_run_id`, as that core holds them (ecosystem contract section 6).
+  The core computes it and returns it in the close answer; the adapter copies it **verbatim** into
+  the run result and MUST NOT compute, reformat or change it. There is one producer of the digest.
+  The byte layout, which every product that computes or verifies a digest MUST follow:
   1. the ids are a **set**: an id counted once however many times it was ingested;
   2. sort them ascending by their UTF-8 bytes (so `B` sorts before `a`, and `-` before `.`);
   3. write each id followed by exactly one LF byte (0x0A), and no other byte (no separator, no
@@ -185,6 +255,11 @@ and applies it. The adapter MUST NOT call a mock's own control surface, nor any 
 mock: a mock's URL is for the system under test, not for the adapter. The conformance suite checks
 that no call reaches a mock except through the stub Mocks Studio core (`mock-control-bypass`).
 
+`announceCorrelation` is **optional** and exists for protocols that cannot carry the `traceparent`
+and `baggage` headers (ruling 13). An adapter whose test reaches the system under test over HTTP
+with those headers never calls it; one whose protocol has no header (a raw TCP or SMTP exchange)
+calls it to tell the Mocks Studio core which correlation id a step uses.
+
 ## 9. Live events: `tests.event/v1`
 
 Events are the live timeline. One console merges this stream and the mocks' `mocks.event/v1`
@@ -220,7 +295,14 @@ one `startStep` returned for that `step_id`.
 An adapter emits at least `run.opened`, `step.started`, `step.finished` and `run.closed`, and a
 required event counts only when the core accepted it (`202`). Closing the test run revokes its
 credential (section 5), so `run.closed` MUST be emitted **before** `closeTestRun`: one emitted
-afterwards is refused, and the run has no `run.closed` event.
+afterwards is refused, and the run has no `run.closed` event. This is the only reading of the
+rule (ruling 7).
+
+**Order.** Beyond that one constraint, v1.1 specifies no order among events: the timeline is merged
+by `at`, and a consumer MUST NOT rely on the order in which a core ingested them.
+
+**Attempts.** An adapter MAY emit `x-<adapter>.attempt` events for the earlier attempts of a
+retried item (section 6.1). They carry the item's `step_id` and `correlation_id` like any step event.
 
 ## 10. Refusals
 
@@ -232,13 +314,31 @@ permitted values, when a set applies). Reason codes of the Tests Studio core:
 `run-open-not-allowed` · `run-attached` · `run-already-open` · `run-id-invalid` ·
 `request-invalid` · `step-id-missing` · `step-unknown` · `step-already-started` ·
 `step-already-finished` · `result-invalid` · `failure-missing` · `evidence-digest-mismatch` ·
-`evidence-kind-unknown` · `event-invalid` · `event-schema-unknown`.
+`evidence-kind-unknown` · `event-invalid` · `event-schema-unknown` · `run-result-mismatch` (v1.1:
+the close's verdict or counts differ from the core's own tally, section 7).
+
+**Refusals of the adapter itself.** A refusal is also something an adapter issues, to its own
+caller, when it cannot proceed. These names are the adapter's, never a core's answer:
+`mocks-core-mismatch` (`MOCKS_CORE_URL` and the answer's `mocks_core_url` name different services,
+section 4). An adapter's refusal follows the same shape: it says what was measured, what it refuses,
+and what to do next.
 
 A call made with the credential of a test run that has been closed is refused `403
 run-credential-invalid` (section 5): closing revokes the credential, and there is no separate code
 for it.
 
 The Mocks Studio core's reason codes are in Appendix C.
+
+### 10.1 A refused call is never retried (ruling 15)
+
+A **refusal** is a `4xx` answer carrying a refusal document. It is a decision: the adapter MUST NOT
+send the same request again, and it reports the refusal (its message names the next act). A
+**transport failure** (no answer, a reset connection, a `5xx`) is not a decision and MAY be retried,
+with backoff bounded by a documented setting of the adapter (a count and a total time); an adapter
+that retries says its bound in its documentation. A request changed to follow a refusal's advice is a
+new call, not a retry. `closeTestRun` is **always attempted**, whatever else was refused, so that
+the credential is revoked and the run result exists. The check `refusal-not-retried` measures this
+from the recording.
 
 ## 11. Schemas and the ecosystem contract
 
@@ -261,8 +361,8 @@ Building the suite needs **Go 1.26 or newer** (the `go` directive of `conformanc
 
 ```
 go -C conformance build -o /path/to/tests-conformance ./cmd/tests-conformance
-/path/to/tests-conformance --items 3 --mode standalone -- <your adapter command> <its arguments>
-/path/to/tests-conformance --items 3 --mode leg        -- <your adapter command> <its arguments>
+/path/to/tests-conformance --items 4 --mode standalone -- <your adapter command> <its arguments>
+/path/to/tests-conformance --items 4 --mode leg        -- <your adapter command> <its arguments>
 ```
 
 **Continuous integration MUST set `TESTS_CONFORMANCE_REQUIRE_SOCKETS=1` when it runs `go test` in
@@ -270,11 +370,15 @@ go -C conformance build -o /path/to/tests-conformance ./cmd/tests-conformance
 denied, and `go test` still exits 0; with the variable set they fail instead, so a skipped
 measurement cannot read as a pass.
 
-`--items` is the number of test items in your sample project. The sample project MUST hold a
-passing, a failing and a skipped test, and at least one test MUST call the stand-in
-system under test at `$TESTS_CONFORMANCE_SUT_URL` (any path under it, say `/sut/ping`) with the
-`traceparent` and `baggage` headers the step was given; one of them SHOULD set a scenario through
-the Mocks Studio core. Run it in both modes. `--spec-dir` names the `spec/` directory (found by
+`--items` is the number of test items in your sample project (the suite's own sample project has
+four; the number `4` above is that one). The sample project MUST hold a passing, a failing and a
+skipped test, and at least one test MUST call the stand-in system under test at
+`$TESTS_CONFORMANCE_SUT_URL` (any path under it, say `/sut/ping`) with the `traceparent` and
+`baggage` headers the step was given; one of them SHOULD set a scenario through the Mocks Studio
+core. It SHOULD also hold an item whose body never runs (a fixture that fails), which the adapter
+reports as one `error` step (section 6.1), and the run attaches at least one evidence item. The
+suite judges the composition from the results it receives (check `sample-composition`): at least one
+accepted `pass`, one `fail`, one `skip`, and one request at the stand-in system. Run it in both modes. `--spec-dir` names the `spec/` directory (found by
 searching upwards otherwise); `--timeout` bounds the adapter's run (default 120 s).
 
 **The timeout bounds the whole process tree.** On Unix the runner starts your command in a process
@@ -315,23 +419,31 @@ The adapter's own exit status is not checked: a test framework exits non-zero wh
 |---|---|
 | `spec-version-known` | the adapter asked `GET /v1/spec` first and declared a version the core serves |
 | `run-opened` | standalone: one test run opened; leg: one attach to the leg's run with the leg's credential |
-| `no-second-run` | leg: no run opened of any kind; standalone: exactly one open |
-| `step-per-item` | each of the `--items` test items became exactly one step with a unique `step_id` and exactly one result carrying it |
+| `no-second-run` | leg: no run opened of any kind, and no attach made while a test run is attached (a new attach after the close is allowed, ruling 12); standalone: exactly one open |
+| `step-per-item` | each of the `--items` test items became exactly one step with a unique `step_id` (one start each, even a refused second start counts) and exactly one accepted result carrying it; no result is sent without its `step_id` |
 | `step-result-valid` | every result is `pass`, `fail`, `error` or `skip`, carries a `duration_ms` of 0 or more (an absent one fails), and carries failure text where failing |
 | `traceparent-to-sut` | every request the system under test received carried exactly a `traceparent` and `baggage` the core handed out, and at least one arrived |
 | `evidence-digest` | every evidence upload declares the SHA-256 of its own bytes, with a known kind, and its `Tests-Step-Id` names a step the core accepted |
-| `events-valid` | every emitted event validates against `tests.event/v1` and carries this run's ids; each step event carries the `correlation_id` `startStep` returned; the four required kinds were each accepted (`202`) |
+| `events-valid` | every emitted event validates against `tests.event/v1` and carries this run's ids; each step event carries the `correlation_id` `startStep` returned; the four required kinds were each accepted (`202`); no `event_id` names two different events (ruling 16) |
 | `run-result-schema` | the published run result validates, repeats the core's `events_digest`, and its evidence line is on standard output |
-| `run-result-counts` | the counts equal the steps and results the core saw, and the verdict follows from them |
+| `run-result-counts` | the counts equal the steps and the results the core accepted, the verdict follows from them, and the core never refused a close as `run-result-mismatch` (ruling 1) |
 | `credential-presented` | every call that needs a credential presented its own run's |
 | `credential-not-leaked` | no credential appears in an event, the run result or the adapter's output |
 | `mock-control-bypass` | no call reached a mock's own URL |
+| `sample-composition` | the accepted results hold at least one `pass`, one `fail` and one `skip`, and at least one request reached the stand-in system (ruling 14) |
+| `refusal-not-retried` | no request the core or the Mocks Studio core refused by name was sent again unchanged (ruling 15) |
 
 A check that measures something the adapter must DO fails when there is nothing to measure: no
-events, no evidence, no request at the system under test, no step result, no run result. The three
+events, no evidence, no request at the system under test, no step result, no run result. The four
 checks that measure something the adapter must NOT do (`no-second-run`, `credential-not-leaked`,
-`mock-control-bypass`) pass when they observe no violation; their output says how many calls they
-looked at, and a run that made no call at all never reaches them (exit 3).
+`mock-control-bypass`, `refusal-not-retried`) pass when they observe no violation; their output says
+how many calls they looked at, and a run that made no call at all never reaches them (exit 3).
+
+**What the suite cannot see.** It serves one request at a time, so it cannot observe parallel
+workers racing (ruling 3 is checked through its effects: one start and one result per `step_id`); it
+cannot tell a retried item's attempts from separate items except by the count of steps (ruling 4);
+and it cannot tell an item whose body never ran from one that failed, so the `error` and its failure
+text (ruling 5) are checked only as far as `step-result-valid` and `step-per-item` go.
 
 **Mutants.** The suite's own fixture adapter (`conformance/internal/sampleadapter`, run over the
 sample project in `conformance/testdata/sample-project`) passes every check. Each mutant breaks one
@@ -347,8 +459,59 @@ rule and fails exactly one check:
 | `credential-in-summary` | the credential printed in an event summary | 1 | `credential-not-leaked` |
 | `mock-control-direct` | a call to a mock's control URL | 1 | `mock-control-bypass` |
 | `second-run-in-leg` | a second run opened inside a leg's run | 1 | `no-second-run` |
+| `counts-mismatch` | a close whose counts the core's tally contradicts (the core refuses it, the adapter then closes right) | 1 | `run-result-counts` |
+| `duplicate-step-id` | a `step_id` started a second time | 1 | `step-per-item` |
+| `retry-as-new-step` | a retried item reported as a second step | 1 | `step-per-item` |
+| `never-ran-without-step` | an item whose body never ran, left without a step | 1 | `step-per-item` |
+| `evidence-unstarted-step` | evidence for a step that was never started | 1 | `evidence-digest` |
+| `run-closed-after-close` | `run.closed` emitted after `closeTestRun` | 1 | `events-valid` |
+| `concurrent-attach-in-leg` | an attach while a test run is attached | 1 | `no-second-run` |
+| `sample-without-skip` | a sample project with no skipped test | 1 | `sample-composition` |
+| `retry-refused-call` | a refused attach sent again unchanged | 1 | `refusal-not-retried` |
+| `event-id-reused` | one `event_id` on two different events | 1 | `events-valid` |
+
+The fixture adapter also shows the rules no mutant can break alone: it attaches evidence after the
+step finished (ruling 6), reports its never-run item as one `error` step with failure text (ruling
+5), counts what the core accepted (ruling 1), copies the core's digest (ruling 2), and refuses by
+name when `MOCKS_CORE_URL` and the answer's `mocks_core_url` differ (ruling 9). A sequential
+re-attach in a leg (ruling 12) passes `no-second-run`: the check's own test feeds it attach, close,
+attach, close.
 
 ## 13. What this specification does not cover
 
 The core itself (runs, storage, evidence, scheduling), the console, and any particular framework's
 adapter. The specification and its suite are the product: nothing here is a library to link.
+
+## 14. Changes in v1.1
+
+Version 1.1 states, once and in the section it belongs to, rules an adapter author could not derive
+from version 1. The wire protocol is unchanged (`v1`); the only new reason code of the core is
+`run-result-mismatch`, and `mocks-core-mismatch` is an adapter-side refusal.
+
+| ruling | what v1.1 states | section |
+|---|---|---|
+| 1 | the core re-tallies at close from the accepted results; a mismatching verdict or counts are refused `422 run-result-mismatch`; a refused result is not counted | 7, 10 |
+| 2 | the adapter copies the core's `events_digest` verbatim; the byte layout is normative | 7 |
+| 3 | one opener per test run; `step_id`s unique within it; a racing second start is refused `409` and its item reported `error` | 6 |
+| 4 | one step per item, finished once with the final outcome; earlier attempts MAY be evidence or `x-<adapter>.attempt` events | 6.1, 9.2 |
+| 5 | an item whose body never ran is one step with result `error` and failure text naming why | 6.1 |
+| 6 | evidence needs a started, accepted step; the step may already be finished | 6.2 |
+| 7 | `run.closed` is emitted before `closeTestRun`; there is no second reading | 9.2 |
+| 8 | ids are not secrets; only the credential is, and it reaches a child process in `TESTS_RUN_TOKEN` | 4 |
+| 9 | `MOCKS_CORE_URL` and the answer's `mocks_core_url` name one service; if they differ the adapter refuses by name, `mocks-core-mismatch` | 4, 10 |
+| 10 | `mocks` is optional in `openTestRun`; a run without mocks is legal | 6 |
+| 11 | one rule and one code for an open inside a leg: `403 run-open-not-allowed` | 4, 6 |
+| 12 | one test run attached at a time, any number in sequence: after `closeTestRun` a new attach with a new `test_run_id` is accepted; `no-second-run` counts concurrent attaches only | 6, 12 |
+| 13 | `announceCorrelation` is optional, for protocols that cannot carry the headers | 8 |
+| 14 | at least one evidence item per conforming run; the suite checks the sample project's composition (`sample-composition`) | 6.2, 12 |
+| 15 | a refusal is never retried; a transport failure MAY be, with a documented bound; `closeTestRun` is always attempted (`refusal-not-retried`) | 10.1, 12 |
+| 16 | `event_id` is unique per test run with set semantics | 2, 12 |
+
+Also stated: event order beyond `run.closed` before `closeTestRun` stays unspecified (section 9.2), and
+the OpenAPI `SpecVersion` pattern `^v[0-9]+$` is unchanged.
+
+**Suite changes an adapter feels.** The suite has fifteen checks (two new: `sample-composition`,
+`refusal-not-retried`); its sample project has four items (`--items 4`), the fourth being an item
+whose body never runs; `no-second-run` no longer fails a leg that attaches again after it closed
+its test run (it failed such a leg in v1); `step-per-item` also fails a result sent without its
+`step_id`, whatever followed it.
