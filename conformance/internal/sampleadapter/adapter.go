@@ -207,7 +207,8 @@ func (a *adapter) runItem(i int, it Item, counts *proto.Counts) {
 	case "skip":
 		counts.Skipped++
 	}
-	res := proto.StepResult{StepID: &stepID, Result: result, DurationMS: time.Since(t0).Milliseconds(), Failure: it.Failure}
+	duration := time.Since(t0).Milliseconds()
+	res := proto.StepResult{StepID: &stepID, Result: result, DurationMS: &duration, Failure: it.Failure}
 	if a.mutant == MutantResultNoStepID && i == 0 {
 		res.StepID = nil // breaks one rule: a result without its step_id
 	}

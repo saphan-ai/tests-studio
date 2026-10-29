@@ -122,11 +122,12 @@ type StepStarted struct {
 	Baggage       string `json:"baggage"`
 }
 
-// StepResult is the body of finishStep.
+// StepResult is the body of finishStep. StepID and DurationMS are pointers so that an absent
+// field reads differently from a zero one.
 type StepResult struct {
 	StepID     *string `json:"step_id,omitempty"`
 	Result     string  `json:"result"`
-	DurationMS int64   `json:"duration_ms"`
+	DurationMS *int64  `json:"duration_ms"`
 	Failure    string  `json:"failure,omitempty"`
 }
 

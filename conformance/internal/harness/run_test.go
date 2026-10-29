@@ -3,6 +3,7 @@ package harness_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -155,7 +156,8 @@ func TestAdapterCommandThatDoesNotExistExits3(t *testing.T) {
 // against recorded calls, with no adapter and no socket.
 func TestChecksReadTheRecording(t *testing.T) {
 	t.Parallel()
-	base := runInProcess(t, stubs.ModeStandalone, "").Input
+	standalone := runInProcess(t, stubs.ModeStandalone, "").Input
+	leg := runInProcess(t, stubs.ModeLeg, "").Input
 
 	firstCall := func(in *checks.Input, pred func(stubs.Call) bool) *stubs.Call {
 		for i := range in.Calls {
@@ -169,11 +171,78 @@ func TestChecksReadTheRecording(t *testing.T) {
 	path := func(sub string) func(stubs.Call) bool {
 		return func(c stubs.Call) bool { return strings.Contains(c.Path, sub) }
 	}
-	cases := []struct {
+	// editBody rewrites the JSON object a recorded call carried, so a case can drop or change one field.
+	editBody := func(c *stubs.Call, edit func(m map[string]any)) {
+		var m map[string]any
+		if err := json.Unmarshal(c.Body, &m); err != nil {
+			t.Fatalf("call %d does not carry a JSON object: %v", c.Seq, err)
+		}
+		edit(m)
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Body = b
+	}
+	bodyHas := func(field, value string) func(stubs.Call) bool {
+		return func(c stubs.Call) bool {
+			var m map[string]any
+			return json.Unmarshal(c.Body, &m) == nil && m[field] == value
+		}
+	}
+	finishWith := func(result string) func(stubs.Call) bool {
+		return func(c stubs.Call) bool {
+			return strings.HasSuffix(c.Path, "/step-results") && bodyHas("result", result)(c)
+		}
+	}
+	eventOfKind := func(kind string) func(stubs.Call) bool {
+		return func(c stubs.Call) bool { return strings.HasSuffix(c.Path, "/events") && bodyHas("kind", kind)(c) }
+	}
+	type variation struct {
 		name   string
 		failed string
 		vary   func(in *checks.Input)
-	}{
+	}
+	// Each case below guards one rule the review of the first round found unguarded.
+	guardCases := []variation{
+		{"a step result without duration_ms", checks.IDStepResult, func(in *checks.Input) {
+			editBody(firstCall(in, path("/step-results")), func(m map[string]any) { delete(m, "duration_ms") })
+		}},
+		{"a step result with a negative duration", checks.IDStepResult, func(in *checks.Input) {
+			editBody(firstCall(in, path("/step-results")), func(m map[string]any) { m["duration_ms"] = -1 })
+		}},
+		{"a failing step result without failure text", checks.IDStepResult, func(in *checks.Input) {
+			editBody(firstCall(in, finishWith("fail")), func(m map[string]any) { delete(m, "failure") })
+		}},
+		{"run.closed refused because it came after closeTestRun", checks.IDEventsValid, func(in *checks.Input) {
+			firstCall(in, eventOfKind("run.closed")).Status = http.StatusForbidden
+		}},
+		{"evidence that names a step the core never started", checks.IDEvidenceDigest, func(in *checks.Input) {
+			c := firstCall(in, path("/evidence/"))
+			c.Header = c.Header.Clone()
+			c.Header.Set("Tests-Step-Id", "no-such-step")
+		}},
+		{"evidence with no Tests-Step-Id", checks.IDEvidenceDigest, func(in *checks.Input) {
+			c := firstCall(in, path("/evidence/"))
+			c.Header = c.Header.Clone()
+			c.Header.Del("Tests-Step-Id")
+		}},
+		{"a step event with a valid correlation_id the core did not hand out", checks.IDEventsValid, func(in *checks.Input) {
+			editBody(firstCall(in, eventOfKind("step.started")), func(m map[string]any) { m["correlation_id"] = strings.Repeat("ab", 16) })
+		}},
+		{"a second openTestRun in standalone mode", checks.IDNoSecondRun, func(in *checks.Input) {
+			in.Calls = append(in.Calls, stubs.Call{Seq: 998, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs", Header: http.Header{}, Status: http.StatusConflict})
+		}},
+	}
+	legCases := []variation{
+		{"an attach to another run than the leg's", checks.IDRunOpened, func(in *checks.Input) {
+			c := firstCall(in, func(c stubs.Call) bool {
+				return strings.HasPrefix(c.Path, "/v1/runs/") && strings.HasSuffix(c.Path, "/test-runs")
+			})
+			c.Path = "/v1/runs/another-run/test-runs"
+		}},
+	}
+	cases := []variation{
 		{"a step call without the bearer credential", checks.IDCredentialSent, func(in *checks.Input) {
 			c := firstCall(in, path("/steps"))
 			c.Header = c.Header.Clone()
@@ -213,25 +282,29 @@ func TestChecksReadTheRecording(t *testing.T) {
 			in.Calls = kept
 		}},
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			in := base
-			in.Calls = append([]stubs.Call(nil), base.Calls...)
-			in.ResultRaw = append([]byte(nil), base.ResultRaw...)
-			// The varied call is copied before it is changed, so the base recording stays intact.
-			for i := range in.Calls {
-				in.Calls[i].Body = append([]byte(nil), in.Calls[i].Body...)
-			}
-			c.vary(&in)
-			var red []string
-			for _, r := range checks.All(in) {
-				if !r.Pass {
-					red = append(red, r.ID)
+	runCases := func(base checks.Input, list []variation) {
+		for _, c := range list {
+			t.Run(c.name, func(t *testing.T) {
+				in := base
+				in.Calls = append([]stubs.Call(nil), base.Calls...)
+				in.ResultRaw = append([]byte(nil), base.ResultRaw...)
+				// The varied call is copied before it is changed, so the base recording stays intact.
+				for i := range in.Calls {
+					in.Calls[i].Body = append([]byte(nil), in.Calls[i].Body...)
 				}
-			}
-			if len(red) != 1 || red[0] != c.failed {
-				t.Fatalf("want only %s red, got %v", c.failed, red)
-			}
-		})
+				c.vary(&in)
+				var red []string
+				for _, r := range checks.All(in) {
+					if !r.Pass {
+						red = append(red, r.ID)
+					}
+				}
+				if len(red) != 1 || red[0] != c.failed {
+					t.Fatalf("want only %s red, got %v", c.failed, red)
+				}
+			})
+		}
 	}
+	runCases(standalone, append(cases, guardCases...))
+	runCases(leg, legCases)
 }

@@ -5,6 +5,7 @@ package checks
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/saphan-ai/tests-studio/conformance/internal/proto"
@@ -181,6 +182,11 @@ func specVersion(in Input, _ facts) Result {
 	return fail(IDSpecVersion, "the adapter asked GET /v1/spec but no open or attach call carried a %s header", proto.HeaderSpecVersion)
 }
 
+func hasStep(issued map[string]proto.StepStarted, id string) bool {
+	_, ok := issued[id]
+	return ok
+}
+
 func contains(list []string, v string) bool {
 	for _, x := range list {
 		if x == v {
@@ -284,8 +290,10 @@ func stepResult(in Input, _ facts) Result {
 		switch {
 		case !contains(proto.Results, r.Result):
 			return fail(IDStepResult, "call %d: result %q is not one of pass, fail, error, skip", c.Seq, r.Result)
-		case r.DurationMS < 0:
-			return fail(IDStepResult, "call %d: duration_ms is %d; it must be 0 or more", c.Seq, r.DurationMS)
+		case r.DurationMS == nil:
+			return fail(IDStepResult, "call %d: the result carried no duration_ms; every result needs one", c.Seq)
+		case *r.DurationMS < 0:
+			return fail(IDStepResult, "call %d: duration_ms is %d; it must be 0 or more", c.Seq, *r.DurationMS)
 		case (r.Result == "fail" || r.Result == "error") && r.Failure == "":
 			return fail(IDStepResult, "call %d: a %s result carried no failure text", c.Seq, r.Result)
 		}
@@ -322,7 +330,7 @@ func traceparent(in Input, f facts) Result {
 	return ok(IDTraceparent, "%d requests reached the system under test, each with exactly the traceparent and baggage the core handed out", hits)
 }
 
-func evidenceDigest(in Input, _ facts) Result {
+func evidenceDigest(in Input, f facts) Result {
 	n := 0
 	for _, c := range in.Calls {
 		if !isEvidence(c) {
@@ -336,6 +344,9 @@ func evidenceDigest(in Input, _ facts) Result {
 		if k := c.Header.Get(proto.HeaderEvidenceKind); !contains(proto.EvidenceKinds, k) {
 			return fail(IDEvidenceDigest, "call %d declared evidence kind %q, outside screenshot, log, artifact", c.Seq, k)
 		}
+		if step := c.Header.Get(proto.HeaderStepID); !hasStep(f.issued, step) {
+			return fail(IDEvidenceDigest, "call %d carried %s %q, which is not a step the core accepted; evidence belongs to a started step", c.Seq, proto.HeaderStepID, step)
+		}
 	}
 	if n == 0 {
 		return fail(IDEvidenceDigest, "no evidence was attached, so no digest could be measured")
@@ -346,8 +357,12 @@ func evidenceDigest(in Input, _ facts) Result {
 // requiredEventKinds are the kinds every adapter emits at least once in a run that has a step.
 var requiredEventKinds = []string{"run.opened", "step.started", "step.finished", "run.closed"}
 
+// stepEventKinds are the kinds that belong to a step: each names the step and carries the
+// correlation_id the core returned when it started that step.
+var stepEventKinds = map[string]bool{"step.started": true, "step.finished": true, "evidence.stored": true}
+
 func eventsValid(in Input, f facts) Result {
-	n := 0
+	n := 0 // every emitted event; the kinds map below holds only the accepted ones
 	kinds := map[string]bool{}
 	for _, c := range in.Calls {
 		if !isEvent(c) {
@@ -355,17 +370,26 @@ func eventsValid(in Input, f facts) Result {
 		}
 		n++
 		var head struct {
-			Kind      string `json:"kind"`
-			RunID     string `json:"run_id"`
-			TestRunID string `json:"test_run_id"`
+			Kind          string `json:"kind"`
+			RunID         string `json:"run_id"`
+			TestRunID     string `json:"test_run_id"`
+			StepID        string `json:"step_id"`
+			CorrelationID string `json:"correlation_id"`
 		}
 		_ = json.Unmarshal(c.Body, &head) // a body that is not JSON fails validation just below
-		kinds[head.Kind] = true
+		if c.Status == http.StatusAccepted {
+			kinds[head.Kind] = true // an event the core refused never reached the timeline
+		}
 		if err := in.Validator.ValidateEvent(c.Body); err != nil {
 			return fail(IDEventsValid, "event in call %d (kind %q) is not a valid tests.event/v1: %s", c.Seq, head.Kind, firstLine(err.Error()))
 		}
 		if f.opened != nil && (head.RunID != f.opened.RunID || head.TestRunID != f.opened.TestRunID) {
 			return fail(IDEventsValid, "event in call %d names run %q / test run %q, not this run's %q / %q", c.Seq, head.RunID, head.TestRunID, f.opened.RunID, f.opened.TestRunID)
+		}
+		if stepEventKinds[head.Kind] {
+			if s, issued := f.issued[head.StepID]; !issued || s.CorrelationID != head.CorrelationID {
+				return fail(IDEventsValid, "event in call %d (kind %q) names step %q with correlation_id %q, which is not the one the core returned when it started that step", c.Seq, head.Kind, head.StepID, head.CorrelationID)
+			}
 		}
 	}
 	if n == 0 {
@@ -373,7 +397,7 @@ func eventsValid(in Input, f facts) Result {
 	}
 	for _, k := range requiredEventKinds {
 		if !kinds[k] {
-			return fail(IDEventsValid, "no event of kind %q was emitted", k)
+			return fail(IDEventsValid, "no event of kind %q was accepted by the core (status 202)", k)
 		}
 	}
 	return ok(IDEventsValid, "%d events, each valid against tests.event/v1 and carrying this run's ids; kinds %s all seen", n, strings.Join(requiredEventKinds, ", "))

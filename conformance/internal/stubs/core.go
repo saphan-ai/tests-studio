@@ -390,9 +390,9 @@ func (s *Stack) finishStep(w http.ResponseWriter, r *http.Request) {
 	case st.finished:
 		refuse(w, http.StatusConflict, proto.ReasonStepFinished,
 			"The step already has a result, so a second was refused. NEXT — send exactly one result per step.", nil)
-	case !contains(proto.Results, req.Result) || req.DurationMS < 0:
+	case !contains(proto.Results, req.Result) || req.DurationMS == nil || *req.DurationMS < 0:
 		refuse(w, http.StatusUnprocessableEntity, proto.ReasonResultInvalid,
-			"The step result was measured as outside pass, fail, error, skip or with a negative duration, so it was refused. NEXT — send one of the four results and a duration of 0 or more.", proto.Results)
+			"The step result was measured as outside pass, fail, error, skip or with an absent or negative duration, so it was refused. NEXT — send one of the four results and a duration_ms of 0 or more.", proto.Results)
 	case (req.Result == "fail" || req.Result == "error") && req.Failure == "":
 		refuse(w, http.StatusUnprocessableEntity, proto.ReasonFailureMissing,
 			"A failing step result was measured as carrying no failure text, so it was refused. NEXT — send the failure text with a fail or error result.", nil)
