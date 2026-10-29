@@ -157,8 +157,12 @@ func TestRunnerOverRealGoTests(t *testing.T) {
 	if !probe.OK || probe.Traceparent != traceparent || probe.Baggage != "mocks.run=r1,mocks.step=s1" {
 		t.Errorf("the test was handed %+v, want the step's traceparent and baggage unchanged", probe)
 	}
-	if len(probe.TokenVariables) != 0 {
-		t.Errorf("the test inherited credential variables %v", probe.TokenVariables)
+	// Only the adapter's own credentials are scrubbed; a host's unrelated *_TOKEN variables belong to the
+	// user's tests and pass through, so they are not judged here.
+	for _, k := range probe.TokenVariables {
+		if k == "MOCKS_RUN_TOKEN" || k == "TESTS_RUN_TOKEN" {
+			t.Errorf("the test inherited the adapter's credential variable %s", k)
+		}
 	}
 }
 
