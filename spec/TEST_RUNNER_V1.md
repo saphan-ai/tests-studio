@@ -418,7 +418,7 @@ The adapter's own exit status is not checked: a test framework exits non-zero wh
 | id | what must hold |
 |---|---|
 | `spec-version-known` | the adapter asked `GET /v1/spec` first and declared a version the core serves |
-| `run-opened` | standalone: one test run opened; leg: one attach to the leg's run with the leg's credential |
+| `run-opened` | standalone: one test run opened; leg: one attach to the leg's run with the leg's credential; one invocation judges one test run |
 | `no-second-run` | leg: no run opened of any kind, and no attach made while a test run is attached (a new attach after the close is allowed, ruling 12); standalone: exactly one open |
 | `step-per-item` | each of the `--items` test items became exactly one step with a unique `step_id` (one start each, even a refused second start counts) and exactly one accepted result carrying it; no result is sent without its `step_id` |
 | `step-result-valid` | every result is `pass`, `fail`, `error` or `skip`, carries a `duration_ms` of 0 or more (an absent one fails), and carries failure text where failing |
@@ -512,6 +512,18 @@ the OpenAPI `SpecVersion` pattern `^v[0-9]+$` is unchanged.
 
 **Suite changes an adapter feels.** The suite has fifteen checks (two new: `sample-composition`,
 `refusal-not-retried`); its sample project has four items (`--items 4`), the fourth being an item
-whose body never runs; `no-second-run` no longer fails a leg that attaches again after it closed
-its test run (it failed such a leg in v1); `step-per-item` also fails a result sent without its
-`step_id`, whatever followed it.
+whose body never runs. One conformance invocation still opens, or attaches, exactly one test run:
+`no-second-run` no longer fails a leg that attaches again after closing its test run (v1 failed
+it), but `run-opened` and the checks after it judge the first test run only, so a sequence of test
+runs in one invocation is not yet exercised end to end.
+
+What v1 passed and v1.1 FAILS — behaviours v1 was silent on, each now refused:
+
+1. a refused request sent again unchanged (`refusal-not-retried`);
+2. one `event_id` on two different event documents (`events-valid`);
+3. counting a result the core refused (`run-result-counts`; the core refuses such a close);
+4. any close refused `run-result-mismatch`, even when a correct close follows it (`run-result-counts`);
+5. closing while a started step has no accepted result (the core refuses the close);
+6. a result sent without its `step_id`, whatever followed it (`step-per-item`).
+
+Everything else v1.1 adds is either a clarification the suite does not observe or a loosening.
