@@ -130,21 +130,41 @@ type Launcher interface {
 
 // passthroughEnv names the host variables an adapter's environment keeps, so that toolchains and
 // temporary directories still work while no other secret of the host reaches the adapter.
-var passthroughEnv = []string{"PATH", "HOME", "TMPDIR", "GOCACHE", "GOMODCACHE", "GOFLAGS", "SystemRoot", "LANG"}
+var passthroughEnv = []string{
+	"PATH", "HOME", "TMPDIR", "LANG",
+	"GOCACHE", "GOMODCACHE", "GOFLAGS",
+	"VIRTUAL_ENV", "NODE_PATH", "PLAYWRIGHT_BROWSERS_PATH",
+	"SystemRoot", "SystemDrive", "ComSpec", "PATHEXT", "USERPROFILE", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA",
+}
 
 const maxOutputBytes = 1 << 20
 
+// DefaultWaitDelay is how long the runner waits, after the adapter's command exits or is killed,
+// for a descendant that still holds the output pipes before it closes them.
+const DefaultWaitDelay = 5 * time.Second
+
 // ExecLauncher runs the command as a child process.
-type ExecLauncher struct{}
+type ExecLauncher struct {
+	// WaitDelay bounds the wait for output pipes a descendant keeps open; DefaultWaitDelay when zero.
+	WaitDelay time.Duration
+	// PassEnv names host environment variables kept in the adapter's environment besides the
+	// defaults (passthroughEnv).
+	PassEnv []string
+}
 
 // Launch implements Launcher.
-func (ExecLauncher) Launch(ctx context.Context, l Launch) (Output, error) {
+func (e ExecLauncher) Launch(ctx context.Context, l Launch) (Output, error) {
 	if len(l.Args) == 0 {
 		return Output{}, errors.New("no adapter command was given")
 	}
 	cmd := exec.CommandContext(ctx, l.Args[0], l.Args[1:]...)
+	ownProcessGroup(cmd)
+	cmd.WaitDelay = e.WaitDelay
+	if cmd.WaitDelay <= 0 {
+		cmd.WaitDelay = DefaultWaitDelay
+	}
 	env := append([]string(nil), l.Env...)
-	for _, k := range passthroughEnv {
+	for _, k := range append(append([]string(nil), passthroughEnv...), e.PassEnv...) {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
@@ -156,7 +176,7 @@ func (ExecLauncher) Launch(ctx context.Context, l Launch) (Output, error) {
 	out := Output{Stdout: stdout.String(), Stderr: stderr.String()}
 	var exitErr *exec.ExitError
 	switch {
-	case err == nil:
+	case err == nil, errors.Is(err, exec.ErrWaitDelay): // the command exited; a descendant holding the pipes was cut off
 	case ctx.Err() != nil:
 		out.TimedOut, out.ExitCode = true, -1
 	case errors.As(err, &exitErr):
