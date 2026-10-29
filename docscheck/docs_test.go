@@ -323,53 +323,46 @@ var (
 	spanRe    = regexp.MustCompile("`([^`]+)`")
 )
 
-// TestMeasuredNumbers requires every row of the README's "What is measured" table to be
-// | what | number | `command` |, runs the command, and compares its first integer with the number.
+var boldNumberRe = regexp.MustCompile(`^- \*\*(\d+)\*\*`)
+
+// TestMeasuredNumbers requires every item of the README's "What is measured" list to read
+// - **N** what it counts: `command`, runs the command, and compares its first integer with N.
 func TestMeasuredNumbers(t *testing.T) {
 	body := section(t, "README.md", "What is measured")
 	if strings.TrimSpace(body) == "" {
 		t.Fatalf("README.md has no \"What is measured\" section")
 	}
 	dir := freshCopy(t)
-	rows := 0
+	items := 0
 	for _, l := range strings.Split(body, "\n") {
 		trim := strings.TrimSpace(l)
-		if !strings.HasPrefix(trim, "|") {
-			if digitRe.MatchString(isoDateRe.ReplaceAllString(trim, "")) && !spanRe.MatchString(trim) {
-				t.Errorf("README.md \"What is measured\": the line %q carries a number but no command that produced it", trim)
+		spans := spanRe.FindAllStringSubmatch(trim, -1)
+		if !strings.HasPrefix(trim, "- ") {
+			if digitRe.MatchString(isoDateRe.ReplaceAllString(trim, "")) {
+				t.Errorf("README.md \"What is measured\": the line %q carries a number outside a measured item: write it as - **N** what it counts: `command`", trim)
 			}
 			continue
 		}
-		cells := strings.Split(strings.Trim(trim, "|"), "|")
-		for i := range cells {
-			cells[i] = strings.TrimSpace(cells[i])
-		}
-		if len(cells) != 3 || cells[1] == "Number" || strings.HasPrefix(cells[0], "---") || strings.HasPrefix(cells[0], ":--") {
+		nm := boldNumberRe.FindStringSubmatch(trim)
+		if nm == nil || len(spans) == 0 {
+			t.Errorf("README.md \"What is measured\": the item %q must read - **N** what it counts: `command`", trim)
 			continue
 		}
-		m := spanRe.FindStringSubmatch(cells[2])
-		if m == nil {
-			t.Errorf("README.md \"What is measured\": the row %q has no `command` in its third cell", cells[0])
-			continue
-		}
-		want, err := strconv.Atoi(cells[1])
+		want, _ := strconv.Atoi(nm[1])
+		cmd := spans[len(spans)-1][1]
+		items++
+		out, err := shell(dir, cmd)
 		if err != nil {
-			t.Errorf("README.md \"What is measured\": the number of %q is %q, not an integer", cells[0], cells[1])
-			continue
-		}
-		rows++
-		out, err := shell(dir, m[1])
-		if err != nil {
-			t.Errorf("README.md \"What is measured\": the command %q for %q failed: %v\n%s", m[1], cells[0], err, out)
+			t.Errorf("README.md \"What is measured\": the command %q failed: %v\n%s", cmd, err, out)
 			continue
 		}
 		got, err := strconv.Atoi(digitRe.FindString(out))
 		if err != nil || got != want {
-			t.Errorf("README.md \"What is measured\": %q says %d but `%s` prints %q: recompute and correct the number", cells[0], want, m[1], strings.TrimSpace(out))
+			t.Errorf("README.md \"What is measured\": the item says %d but `%s` prints %q: recompute and correct the number", want, cmd, strings.TrimSpace(out))
 		}
 	}
-	if rows == 0 {
-		t.Errorf("README.md \"What is measured\" has no row of the form | what | number | `command` |")
+	if items == 0 {
+		t.Errorf("README.md \"What is measured\" has no item of the form - **N** what it counts: `command`")
 	}
 }
 
@@ -402,7 +395,7 @@ var (
 	ipv4Re = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 	urlRe  = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://([^/\s)>\x60"'\]]+)`)
 	// a bare dotted name whose last label is letters: file names with a known extension are skipped
-	bareRe = regexp.MustCompile(`\b([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,})\b`)
+	bareRe = regexp.MustCompile(`\b([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z][a-z-]*[a-z])\b`)
 
 	allowedNets = []netip.Prefix{
 		netip.MustParsePrefix("192.0.2.0/24"),
@@ -417,6 +410,12 @@ var (
 		"cfg": true, "ini": true, "env": true, "lock": true, "bin": true,
 	}
 )
+
+// identifiers are dotted names of the specification that are not host names: schema and event kinds.
+var identifiers = map[string]bool{
+	"tests.event": true, "tests.run-result": true, "mocks.event": true,
+	"run.opened": true, "run.closed": true, "step.started": true, "step.finished": true, "evidence.stored": true,
+}
 
 func hostAllowed(host string) bool {
 	h := strings.ToLower(host)
@@ -461,7 +460,7 @@ func TestNoStrangerHosts(t *testing.T) {
 			rest = strings.ReplaceAll(rest, "github.com/saphan-ai/", " ")
 			for _, m := range bareRe.FindAllString(rest, -1) {
 				last := m[strings.LastIndexByte(m, '.')+1:]
-				if fileExt[last] || hostAllowed(m) {
+				if fileExt[last] || identifiers[m] || hostAllowed(m) {
 					continue
 				}
 				if _, err := netip.ParseAddr(m); err == nil {
