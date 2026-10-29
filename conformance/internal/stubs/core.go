@@ -83,6 +83,8 @@ func New(mode Mode, val *schemas.Validator) *Stack {
 
 // SetURLs tells the stack where each stub is served; it must be called before the first request.
 func (s *Stack) SetURLs(core, mocks, world string) {
+	s.Rec.mu.Lock()
+	defer s.Rec.mu.Unlock()
 	s.coreURL, s.mocksURL, s.worldURL = core, mocks, world
 }
 
@@ -90,7 +92,11 @@ func (s *Stack) SetURLs(core, mocks, world string) {
 func (s *Stack) Served() []string { return append([]string(nil), s.served...) }
 
 // LegEnv returns the run id and credential a leg's environment would carry (leg mode only).
-func (s *Stack) LegEnv() (runID, token string) { return s.runID, s.runCred }
+func (s *Stack) LegEnv() (runID, token string) {
+	s.Rec.mu.Lock()
+	defer s.Rec.mu.Unlock()
+	return s.runID, s.runCred
+}
 
 // Handlers returns the three recorded stubs.
 func (s *Stack) Handlers() (core, mocks, world http.Handler) {
