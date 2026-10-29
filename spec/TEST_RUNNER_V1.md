@@ -92,7 +92,8 @@ The full shape is `runner-v1.openapi.yaml` (OpenAPI 3.1). In order:
 |---|---|---|
 | `GET /v1/spec` | `getSpec` | the served spec versions; no credential |
 | `POST /v1/test-runs` | `openTestRun` | open a standalone test run: `{project, mocks[], test_run_id?}`; answers ids, endpoints and credentials; no credential needed |
-| `POST /v1/runs/{run_id}/test-runs` | `attachTestRun` | attach to a leg's run: `{project, test_run_id?, reset?}`; carries the leg's run credential; answers like `openTestRun` without `run_credential` || `POST /v1/test-runs/{id}/steps` | `startStep` | `{step_id, name}`; answers `{step_id, correlation_id, traceparent, baggage}` |
+| `POST /v1/runs/{run_id}/test-runs` | `attachTestRun` | attach to a leg's run: `{project, test_run_id?, reset?}`; carries the leg's run credential; answers like `openTestRun` without `run_credential` |
+| `POST /v1/test-runs/{id}/steps` | `startStep` | `{step_id, name}`; answers `{step_id, correlation_id, traceparent, baggage}` |
 | `POST /v1/test-runs/{id}/step-results` | `finishStep` | `{step_id, result, duration_ms, failure?}`; `result` is `pass`, `fail`, `error` or `skip`; `failure` text is required for `fail` and `error` |
 | `PUT /v1/test-runs/{id}/evidence/{sha256}` | `attachEvidence` | the body is the evidence bytes; headers `Tests-Evidence-Kind` (`screenshot`, `log`, `artifact`) and `Tests-Step-Id` |
 | `POST /v1/test-runs/{id}/events` | `emitEvent` | one `tests.event/v1` document |
