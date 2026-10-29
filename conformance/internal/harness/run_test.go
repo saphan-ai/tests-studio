@@ -100,7 +100,7 @@ var mutantCases = []struct {
 	{sampleadapter.MutantSecondRunInLeg, stubs.ModeLeg, harness.ExitFail, checks.IDNoSecondRun},
 }
 
-// TestMutantFailsExactlyItsCheck is the negative control of law #27: each mutant breaks one
+// TestMutantFailsExactlyItsCheck is the negative control of the checks: each mutant breaks one
 // rule, and exactly that rule's check (and no other) goes red.
 func TestMutantFailsExactlyItsCheck(t *testing.T) {
 	t.Parallel()

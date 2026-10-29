@@ -54,7 +54,6 @@ const (
 	ReasonEvidenceKind     = "evidence-kind-unknown"
 	ReasonEventInvalid     = "event-invalid"
 	ReasonEventSchema      = "event-schema-unknown"
-	ReasonTestRunClosed    = "test-run-closed"
 )
 
 // Step results, and evidence kinds.
