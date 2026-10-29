@@ -60,6 +60,29 @@ func TestExecLauncherTimeoutStopsAGrandchildThatHoldsStdout(t *testing.T) {
 	}
 }
 
+// TestExecLauncherScrubsTheEnvironmentExceptWhatIsPassed pins specification section 12: a host
+// variable outside the default list does not reach the adapter, VIRTUAL_ENV does, and --pass-env
+// adds one more. It opens no socket.
+func TestExecLauncherScrubsTheEnvironmentExceptWhatIsPassed(t *testing.T) {
+	t.Setenv("CONFORMANCE_HOST_SECRET", "leaked")
+	t.Setenv("CONFORMANCE_EXTRA", "extra")
+	t.Setenv("VIRTUAL_ENV", "/venv")
+	script := "echo secret=$CONFORMANCE_HOST_SECRET extra=$CONFORMANCE_EXTRA venv=$VIRTUAL_ENV own=$OWN"
+	run := func(l harness.ExecLauncher) string {
+		out, err := l.Launch(context.Background(), harness.Launch{Args: []string{"sh", "-c", script}, Env: []string{"OWN=given"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(out.Stdout)
+	}
+	if got, want := run(harness.ExecLauncher{}), "secret= extra= venv=/venv own=given"; got != want {
+		t.Errorf("default environment: got %q, want %q", got, want)
+	}
+	if got, want := run(harness.ExecLauncher{PassEnv: []string{"CONFORMANCE_EXTRA"}}), "secret= extra=extra venv=/venv own=given"; got != want {
+		t.Errorf("with PassEnv: got %q, want %q", got, want)
+	}
+}
+
 // processAlive says whether pid names a live process; a zombie awaiting its reaper counts as gone.
 func processAlive(pid int) bool {
 	if syscall.Kill(pid, 0) != nil {
