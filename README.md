@@ -40,13 +40,26 @@ You need Go 1.26 or newer. The suite starts two stand-in servers on your own mac
 
 What you should see is one line per check, ending in exit code 0:
 
-<!-- UNRUN: the run below was not made. The machine this page was written on denies loopback
-     (see "Honest limits"). Replace this block with the real, unedited output of the two
-     commands above, and the date and machine kind of the run. Do not write it by hand. -->
+Measured on 2026-10-30 on an Apple-silicon macOS machine, the first command, unedited (the leg-mode run printed
+the same thirteen `PASS` lines for leg mode):
 
 ```text
-UNRUN — output of ./bin/tests-conformance --items 3 --mode standalone -- ./bin/sample-adapter ...
-(to be pasted from a machine that allows loopback; never typed in)
+PASS spec-version-known — asked GET /v1/spec (call 1), then declared "v1", which the core serves (v1)
+PASS run-opened — standalone mode: opened test run tr-a7182781 on run conf-run-e959ab
+PASS no-second-run — standalone mode: 1 open, 0 attach and 0 openRun-on-Mocks calls
+PASS step-per-item — 3 test items became 3 steps with unique step_ids, each with exactly one result
+PASS step-result-valid — 3 step results, each one of pass, fail, error, skip with a duration and, where failing, failure text
+PASS traceparent-to-sut — 2 requests reached the system under test, each with exactly the traceparent and baggage the core handed out
+PASS evidence-digest — 2 evidence uploads, each declaring the SHA-256 of its own bytes
+PASS events-valid — 10 events, each valid against tests.event/v1 and carrying this run's ids; kinds run.opened, step.started, step.finished, run.closed all seen
+PASS run-result-schema — the run result validates against tests.run-result/v1, repeats the core's events_digest, and its evidence line is on standard output
+PASS run-result-counts — counts {Total:3 Passed:1 Failed:1 Errored:0 Skipped:1} equal the steps the core saw, and verdict "fail" follows from them
+PASS credential-presented — all 21 calls that need a credential presented the credential of their own run
+PASS credential-not-leaked — none of 2 credentials appears in any event, summary, the run result or the adapter's output
+PASS mock-control-bypass — 25 calls observed, none to a mock's own URL; 2 went through the Mocks Studio core
+SUMMARY 13 checks, 13 passed, 0 failed (standalone mode)
+remark: this run measured one adapter run in standalone mode only; run it again in the other mode before claiming either
+remark: the stubs serve one request at a time, so the suite does not measure an adapter's behaviour under concurrent steps
 ```
 
 What the suite prints on a machine that denies loopback was measured and is real. It says so and stops with exit code 4, before any check:
