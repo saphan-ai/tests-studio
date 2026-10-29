@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tests.event/v1",
+  "title": "Tests Studio event envelope, version 1",
+  "description": "The live event a test-runner adapter emits (spec/TEST_RUNNER_V1.md). The SHARED HEADER fields run_id, test_run_id, step_id, correlation_id, at and payload are byte-identical to the same fields of mocks.event/v1 (spec/ecosystem-v1/mocks-event-v1.schema.json); a console merges both streams on them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "event_id", "at", "run_id", "test_run_id", "kind", "emitter", "summary"],
+  "properties": {
+    "schema": { "const": "tests.event/v1" },
+    "event_id": { "type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$" },
+    "at": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+    "run_id": { "$ref": "#/$defs/run_id" },
+    "test_run_id": { "$ref": "#/$defs/run_id" },
+    "step_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "correlation_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "not": { "const": "00000000000000000000000000000000" } },
+    "emitter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "spec"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}$" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "spec": { "type": "string", "pattern": "^v[0-9]+$" }
+      }
+    },
+    "kind": {
+      "anyOf": [
+        { "enum": ["run.opened", "step.started", "step.finished", "evidence.stored", "run.closed"] },
+        { "type": "string", "pattern": "^x-[a-z0-9-]+\\.[a-z0-9.-]+$" }
+      ]
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "outcome": { "enum": ["pass", "fail", "error", "skip"] },
+    "payload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["redacted", "digest", "size"],
+          "properties": {
+            "redacted": { "const": true },
+            "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "size": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["redacted", "fields"],
+          "properties": {
+            "redacted": { "const": false },
+            "fields": { "type": "object" }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "enum": ["step.started", "step.finished", "evidence.stored"] } } },
+      "then": { "required": ["step_id", "correlation_id"] }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "step.finished" } } },
+      "then": { "required": ["outcome"] }
+    },
+    {
+      "if": { "required": ["kind"], "properties": { "kind": { "const": "run.closed" } } },
+      "then": { "required": ["outcome"], "properties": { "outcome": { "enum": ["pass", "fail", "error"] } } }
+    }
+  ],
+  "$defs": {
+    "run_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" }
+  }
+}
