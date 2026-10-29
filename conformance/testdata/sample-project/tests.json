@@ -1,0 +1,23 @@
+{
+  "project": "sample-project",
+  "tests": [
+    {
+      "name": "TestPasses",
+      "outcome": "pass",
+      "calls_sut": true,
+      "evidence": "log of the passing test\n",
+      "scenario": { "mock": "sample-http", "settings": { "delay_ms": 5 } }
+    },
+    {
+      "name": "TestFails",
+      "outcome": "fail",
+      "failure": "expected 3, got 4",
+      "calls_sut": true,
+      "evidence": "log of the failing test\n"
+    },
+    {
+      "name": "TestSkipped",
+      "outcome": "skip"
+    }
+  ]
+}
