@@ -1,0 +1,314 @@
+openapi: 3.1.0
+info:
+  title: Tests Studio core API for test-runner adapters (v1)
+  version: 1.0.0
+  description: >
+    The calls a test-runner adapter makes to a Tests Studio core (spec/TEST_RUNNER_V1.md). The core
+    implements it; this shape is public. Every operation except getSpec and openTestRun requires a
+    bearer credential: the test-run credential for everything under /v1/test-runs/{test_run_id},
+    the leg's run credential (MOCKS_RUN_TOKEN) for attachTestRun. A missing credential is refused
+    401 run-credential-missing; a credential that is not the one for that id, or is revoked or
+    closed, is refused 403 run-credential-invalid. Neither refusal says whether another run exists.
+    Every refusal is a Refusal document whose first sentence says what was measured, what was
+    refused and what to do next.
+security:
+  - testRunCredential: []
+paths:
+  /v1/spec:
+    get:
+      operationId: getSpec
+      summary: The spec versions this core serves
+      security: []
+      responses:
+        '200':
+          description: The served versions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpecDocument' }
+  /v1/test-runs:
+    post:
+      operationId: openTestRun
+      summary: Open a standalone test run (its own run), receive its ids, endpoints and credentials (returned once)
+      security: []
+      parameters: [ { $ref: '#/components/parameters/SpecVersion' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OpenRequest' }
+      responses:
+        '201':
+          description: Test run opened
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestRunOpened' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '409': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+  /v1/runs/{run_id}/test-runs:
+    parameters: [ { $ref: '#/components/parameters/RunId' } ]
+    post:
+      operationId: attachTestRun
+      summary: Attach a test run to the leg's run (an adapter inside a leg opens no run of its own)
+      security:
+        - runCredential: []
+      parameters: [ { $ref: '#/components/parameters/SpecVersion' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OpenRequest' }
+      responses:
+        '201':
+          description: Attached; the answer carries the test-run credential
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestRunOpened' }
+        '401': { $ref: '#/components/responses/Refused' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '409': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+  /v1/test-runs/{test_run_id}/steps:
+    parameters: [ { $ref: '#/components/parameters/TestRunId' } ]
+    post:
+      operationId: startStep
+      summary: Start a step and receive the W3C traceparent (and baggage) the system under test must carry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartStepRequest' }
+      responses:
+        '201':
+          description: Step started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StepStarted' }
+        '401': { $ref: '#/components/responses/Refused' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '409': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+  /v1/test-runs/{test_run_id}/step-results:
+    parameters: [ { $ref: '#/components/parameters/TestRunId' } ]
+    post:
+      operationId: finishStep
+      summary: Finish a step with exactly one result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StepResult' }
+      responses:
+        '204': { description: Result recorded }
+        '401': { $ref: '#/components/responses/Refused' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '409': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+  /v1/test-runs/{test_run_id}/evidence/{digest}:
+    parameters:
+      - { $ref: '#/components/parameters/TestRunId' }
+      - name: digest
+        in: path
+        required: true
+        description: Lowercase hex SHA-256 of the exact bytes in the request body (no "sha256:" prefix).
+        schema: { type: string, pattern: '^[0-9a-f]{64}$' }
+    put:
+      operationId: attachEvidence
+      summary: Attach evidence (screenshot, log or artifact), content-addressed by SHA-256
+      parameters:
+        - name: Tests-Evidence-Kind
+          in: header
+          required: true
+          schema: { enum: [screenshot, log, artifact] }
+        - name: Tests-Step-Id
+          in: header
+          required: true
+          description: The step the evidence belongs to.
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary } }
+          text/plain: { schema: { type: string } }
+          image/png: { schema: { type: string, format: binary } }
+      responses:
+        '201':
+          description: Stored; the core recomputed the digest and it matched
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [digest, size]
+                properties:
+                  digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+                  size: { type: integer, minimum: 0 }
+        '401': { $ref: '#/components/responses/Refused' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+  /v1/test-runs/{test_run_id}/events:
+    parameters: [ { $ref: '#/components/parameters/TestRunId' } ]
+    post:
+      operationId: emitEvent
+      summary: Emit one live event, a tests.event/v1 document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: 'schemas/tests-event-v1.schema.json' }
+      responses:
+        '202': { description: Accepted }
+        '401': { $ref: '#/components/responses/Refused' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+  /v1/test-runs/{test_run_id}/close:
+    parameters: [ { $ref: '#/components/parameters/TestRunId' } ]
+    post:
+      operationId: closeTestRun
+      summary: Close the test run; the answer is the run result, and closing revokes the credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloseRequest' }
+      responses:
+        '200':
+          description: The run result
+          content:
+            application/json:
+              schema: { $ref: 'schemas/tests-run-result-v1.schema.json' }
+        '401': { $ref: '#/components/responses/Refused' }
+        '403': { $ref: '#/components/responses/Refused' }
+        '422': { $ref: '#/components/responses/Refused' }
+components:
+  securitySchemes:
+    testRunCredential:
+      type: http
+      scheme: bearer
+      description: Scoped to one test_run_id; returned once by openTestRun or attachTestRun; never logged, never put in an event, a summary or any output; closing the run revokes it.
+    runCredential:
+      type: http
+      scheme: bearer
+      description: The leg's run credential (MOCKS_RUN_TOKEN), scoped to the leg's run_id.
+  parameters:
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/RunId' }
+    TestRunId:
+      name: test_run_id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/RunId' }
+    SpecVersion:
+      name: Tests-Spec-Version
+      in: header
+      required: true
+      description: The spec version the adapter speaks, one of those getSpec listed. An unserved version is refused 422 spec-version-unsupported naming the served ones.
+      schema: { type: string, pattern: '^v[0-9]+$' }
+  schemas:
+    RunId:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9._-]{2,63}$'
+    SpecDocument:
+      type: object
+      required: [versions, core]
+      properties:
+        versions: { type: array, minItems: 1, items: { type: string, pattern: '^v[0-9]+$' } }
+        core: { $ref: '#/components/schemas/Identity' }
+    Identity:
+      type: object
+      required: [name, version]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        spec: { type: string, pattern: '^v[0-9]+$' }
+    OpenRequest:
+      type: object
+      additionalProperties: false
+      required: [project]
+      properties:
+        test_run_id: { $ref: '#/components/schemas/RunId' }
+        project: { type: string, minLength: 1, maxLength: 128 }
+        mocks:
+          type: array
+          items: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$' }
+          description: openTestRun only; the mocks the run needs.
+        reset: { type: boolean, default: true, description: attachTestRun only; resets the leg's run when attaching. }
+    TestRunOpened:
+      type: object
+      required: [test_run_id, run_id, started_at, credential, mocks_core_url, endpoints]
+      properties:
+        test_run_id: { $ref: '#/components/schemas/RunId' }
+        run_id: { $ref: '#/components/schemas/RunId' }
+        started_at: { type: string, format: date-time }
+        credential: { type: string, description: The test-run credential; returned once. }
+        run_credential: { type: string, description: 'openTestRun only: the credential of the run the core opened, for calls to the Mocks Studio core; returned once.' }
+        mocks_core_url: { type: string, description: Base URL of the Mocks Studio core. }
+        endpoints:
+          type: object
+          description: mock name → { protocol, url }. The system under test uses them; the adapter never calls them.
+          additionalProperties:
+            type: object
+            required: [protocol, url]
+            properties:
+              protocol: { enum: [http, tcp, smtp, dns, other] }
+              url: { type: string }
+    StartStepRequest:
+      type: object
+      additionalProperties: false
+      required: [step_id, name]
+      properties:
+        step_id: { type: string, minLength: 1, maxLength: 128 }
+        name: { type: string, minLength: 1 }
+    StepStarted:
+      type: object
+      required: [step_id, correlation_id, traceparent, baggage]
+      properties:
+        step_id: { type: string }
+        correlation_id: { type: string, pattern: '^[0-9a-f]{32}$', not: { const: '00000000000000000000000000000000' } }
+        traceparent: { type: string, pattern: '^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$' }
+        baggage: { type: string, description: 'mocks.run=<run_id>,mocks.step=<step_id>' }
+    StepResult:
+      type: object
+      additionalProperties: false
+      required: [step_id, result, duration_ms]
+      properties:
+        step_id: { type: string, minLength: 1 }
+        result: { enum: [pass, fail, error, skip] }
+        duration_ms: { type: integer, minimum: 0 }
+        failure: { type: string, description: Required when result is fail or error. }
+    CloseRequest:
+      type: object
+      additionalProperties: false
+      required: [verdict, counts, started_at, ended_at, adapter]
+      properties:
+        verdict: { enum: [pass, fail, error] }
+        counts:
+          type: object
+          required: [total, passed, failed, errored, skipped]
+          properties:
+            total: { type: integer, minimum: 0 }
+            passed: { type: integer, minimum: 0 }
+            failed: { type: integer, minimum: 0 }
+            errored: { type: integer, minimum: 0 }
+            skipped: { type: integer, minimum: 0 }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        adapter: { $ref: '#/components/schemas/Identity' }
+    Refusal:
+      type: object
+      required: [message, reason_code]
+      properties:
+        message: { type: string, description: 'What was measured, what was refused, what to do next.' }
+        reason_code:
+          type: string
+          description: Public contract key.
+          examples: [spec-version-unsupported, run-credential-missing, run-credential-invalid, run-open-not-allowed, run-attached, run-already-open, run-id-invalid, request-invalid, step-id-missing, step-unknown, step-already-started, step-already-finished, result-invalid, failure-missing, evidence-digest-mismatch, evidence-kind-unknown, event-invalid, event-schema-unknown, test-run-closed]
+        allowed: { type: array, items: { type: string } }
+  responses:
+    Refused:
+      description: Refused by name
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Refusal' }

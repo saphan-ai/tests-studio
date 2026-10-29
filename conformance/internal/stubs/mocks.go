@@ -20,16 +20,20 @@ var (
 	zeroTraceID     = strings.Repeat("0", 32)
 )
 
-func (s *Stack) mocksMux() *http.ServeMux {
-	m := http.NewServeMux()
-	m.HandleFunc("POST /v1/runs", s.mocksOpenRun)
-	m.HandleFunc("GET /v1/runs/{run_id}", s.mocksGetRun)
-	m.HandleFunc("POST /v1/runs/{run_id}/reset", s.mocksReset)
-	m.HandleFunc("GET /v1/runs/{run_id}/mocks/{mock}/settings", s.mocksGetSettings)
-	m.HandleFunc("PUT /v1/runs/{run_id}/mocks/{mock}/settings", s.mocksSetScenario)
-	m.HandleFunc("POST /v1/runs/{run_id}/correlations", s.mocksAnnounce)
-	return m
+// mocksRoutes is the part of Appendix C the stub serves to a runner adapter, keyed "METHOD /path".
+// openRun is served only to refuse it: an adapter opens its run through the Tests Studio core.
+func (s *Stack) mocksRoutes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"POST /v1/runs":                               s.mocksOpenRun,
+		"GET /v1/runs/{run_id}":                       s.mocksGetRun,
+		"POST /v1/runs/{run_id}/reset":                s.mocksReset,
+		"GET /v1/runs/{run_id}/mocks/{mock}/settings": s.mocksGetSettings,
+		"PUT /v1/runs/{run_id}/mocks/{mock}/settings": s.mocksSetScenario,
+		"POST /v1/runs/{run_id}/correlations":         s.mocksAnnounce,
+	}
 }
+
+func (s *Stack) mocksMux() *http.ServeMux { return mux(s.mocksRoutes()) }
 
 // mocksAuth checks the run credential for the run named in the path.
 func (s *Stack) mocksAuth(w http.ResponseWriter, r *http.Request) bool {

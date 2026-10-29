@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -169,17 +170,44 @@ func (s *Stack) specVersionOK(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func (s *Stack) coreMux() *http.ServeMux {
+// coreRoutes is the Tests Studio core API the stub serves, keyed "METHOD /path". A test compares
+// it with spec/runner-v1.openapi.yaml, so the stub and the specification cannot drift apart.
+func (s *Stack) coreRoutes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"GET /v1/spec":                                      s.getSpec,
+		"POST /v1/test-runs":                                s.openTestRun,
+		"POST /v1/runs/{run_id}/test-runs":                  s.attachTestRun,
+		"POST /v1/test-runs/{test_run_id}/steps":            s.startStep,
+		"POST /v1/test-runs/{test_run_id}/step-results":     s.finishStep,
+		"PUT /v1/test-runs/{test_run_id}/evidence/{digest}": s.attachEvidence,
+		"POST /v1/test-runs/{test_run_id}/events":           s.emitEvent,
+		"POST /v1/test-runs/{test_run_id}/close":            s.closeTestRun,
+	}
+}
+
+func (s *Stack) coreMux() *http.ServeMux { return mux(s.coreRoutes()) }
+
+func mux(routes map[string]http.HandlerFunc) *http.ServeMux {
 	m := http.NewServeMux()
-	m.HandleFunc("GET /v1/spec", s.getSpec)
-	m.HandleFunc("POST /v1/test-runs", s.openTestRun)
-	m.HandleFunc("POST /v1/runs/{run_id}/test-runs", s.attachTestRun)
-	m.HandleFunc("POST /v1/test-runs/{test_run_id}/steps", s.startStep)
-	m.HandleFunc("POST /v1/test-runs/{test_run_id}/step-results", s.finishStep)
-	m.HandleFunc("PUT /v1/test-runs/{test_run_id}/evidence/{digest}", s.attachEvidence)
-	m.HandleFunc("POST /v1/test-runs/{test_run_id}/events", s.emitEvent)
-	m.HandleFunc("POST /v1/test-runs/{test_run_id}/close", s.closeTestRun)
+	for pattern, h := range routes {
+		m.HandleFunc(pattern, h)
+	}
 	return m
+}
+
+// CoreRoutes lists the stub core's operations as "METHOD /path".
+func CoreRoutes() []string { return keys((&Stack{}).coreRoutes()) }
+
+// MocksRoutes lists the stub Mocks Studio core's operations as "METHOD /path".
+func MocksRoutes() []string { return keys((&Stack{}).mocksRoutes()) }
+
+func keys(m map[string]http.HandlerFunc) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Stack) getSpec(w http.ResponseWriter, _ *http.Request) {
