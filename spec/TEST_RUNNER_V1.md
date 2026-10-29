@@ -92,12 +92,17 @@ The full shape is `runner-v1.openapi.yaml` (OpenAPI 3.1). In order:
 |---|---|---|
 | `GET /v1/spec` | `getSpec` | the served spec versions; no credential |
 | `POST /v1/test-runs` | `openTestRun` | open a standalone test run: `{project, mocks[], test_run_id?}`; answers ids, endpoints and credentials; no credential needed |
-| `POST /v1/runs/{run_id}/test-runs` | `attachTestRun` | attach to a leg's run: `{project, test_run_id?, reset?}`; carries the leg's run credential; answers like `openTestRun` without `run_credential` |
-| `POST /v1/test-runs/{id}/steps` | `startStep` | `{step_id, name}`; answers `{step_id, correlation_id, traceparent, baggage}` |
+| `POST /v1/runs/{run_id}/test-runs` | `attachTestRun` | attach to a leg's run: `{project, test_run_id?, reset?}`; carries the leg's run credential; answers like `openTestRun` without `run_credential` || `POST /v1/test-runs/{id}/steps` | `startStep` | `{step_id, name}`; answers `{step_id, correlation_id, traceparent, baggage}` |
 | `POST /v1/test-runs/{id}/step-results` | `finishStep` | `{step_id, result, duration_ms, failure?}`; `result` is `pass`, `fail`, `error` or `skip`; `failure` text is required for `fail` and `error` |
 | `PUT /v1/test-runs/{id}/evidence/{sha256}` | `attachEvidence` | the body is the evidence bytes; headers `Tests-Evidence-Kind` (`screenshot`, `log`, `artifact`) and `Tests-Step-Id` |
 | `POST /v1/test-runs/{id}/events` | `emitEvent` | one `tests.event/v1` document |
 | `POST /v1/test-runs/{id}/close` | `closeTestRun` | `{verdict, counts, started_at, ended_at, adapter}`; answers the run result |
+
+An adapter never calls the attach operation of the Mocks Studio core. It asks the Tests Studio core
+(`attachTestRun` above), which attaches to the leg's run on the Mocks Studio core with the run
+credential the adapter presented (ecosystem contract sections 1 and 6). A Tests Studio core
+therefore verifies the leg's run credential by presenting it to the Mocks Studio core, and neither
+keeps nor logs it.
 
 Opening **inside a leg** is refused `403 run-open-not-allowed`. A second attach while one is
 attached is refused `409 run-attached`.
@@ -136,9 +141,33 @@ Fields: `run_id`, `test_run_id`, `project`, `verdict` (`pass`, `fail`, `error`),
 - **Verdict.** `error` if any step errored, else `fail` if any failed, else `pass`. A skipped step
   never fails a run.
 - **`events_digest`.** SHA-256 over the event ids of the Mocks Studio core's events that carry this
-  `test_run_id`: the ids sorted in byte order, each followed by one `\n` byte, written as `sha256:`
-  and 64 lowercase hex characters. An empty set digests the empty input. The core computes it; the
-  adapter copies it and MUST NOT change it.
+  `test_run_id`, as that core holds them (ecosystem contract section 6). The core computes it; the
+  adapter copies it and MUST NOT change it. The byte layout, which every product that computes or
+  verifies a digest MUST follow:
+  1. the ids are a **set**: an id counted once however many times it was ingested;
+  2. sort them ascending by their UTF-8 bytes (so `B` sorts before `a`, and `-` before `.`);
+  3. write each id followed by exactly one LF byte (0x0A), and no other byte (no separator, no
+     header, no final trailer);
+  4. SHA-256 that whole byte string as one input;
+  5. write the result as `sha256:` and 64 lowercase hex characters.
+
+  The empty set digests the empty input. The set is frozen when the test run closes: an event that
+  carries the `test_run_id` and is ingested later does not change the digest the close returned,
+  and a verifier that later recomputes a different digest reports a mismatch.
+
+  Known answers (computed with Python's `hashlib`, outside this repository's Go code, and checked
+  by `proto.EventsDigest`'s test):
+
+  | event ids (as given) | digest |
+  |---|---|
+  | none | `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+  | `evt-0001` | `sha256:d5c51f60239f4d48591a58b5a6aad406fef54315c27eea24f38d800b922d38e4` |
+  | `evt-0001`, `evt-0001` | `sha256:d5c51f60239f4d48591a58b5a6aad406fef54315c27eea24f38d800b922d38e4` |
+  | `evt-0003`, `evt-0001`, `evt-0002` | `sha256:80e903cace39e18ffd3b42682fa4a5ac5cc3399b3570ddde071daefc295bb7c5` |
+  | `evt-b`, `evt-B`, `evt-a.1`, `evt-a-1` | `sha256:d6b0186f9a60e0bd8323617e33d6494898e1ac37cb7150defd589a1b727351f1` |
+
+  The fourth row hashes the bytes `evt-0001\nevt-0002\nevt-0003\n`; the fifth, after sorting to
+  `evt-B`, `evt-a-1`, `evt-a.1`, `evt-b`, hashes `evt-B\nevt-a-1\nevt-a.1\nevt-b\n`.
 - **`evidence_line`.** The line a Saphan leg cites in its return, verbatim:
   `- evidence: tests-studio-run <run_id>/<test_run_id> verdict=<verdict> events=sha256:<hex>`.
   Whoever verifies it asks the Mocks Studio core for the test run's event ids and recomputes the
@@ -184,7 +213,13 @@ asserts it.
   `{redacted: true, digest, size}`, or `{redacted: false, fields}` holding only fields that are safe
   to export.
 
-An adapter emits at least `run.opened`, `step.started`, `step.finished` and `run.closed`.
+The `correlation_id` of a `step.started`, `step.finished` or `evidence.stored` event MUST equal the
+one `startStep` returned for that `step_id`.
+
+An adapter emits at least `run.opened`, `step.started`, `step.finished` and `run.closed`, and a
+required event counts only when the core accepted it (`202`). Closing the test run revokes its
+credential (section 5), so `run.closed` MUST be emitted **before** `closeTestRun`: one emitted
+afterwards is refused, and the run has no `run.closed` event.
 
 ## 10. Refusals
 
@@ -196,7 +231,11 @@ permitted values, when a set applies). Reason codes of the Tests Studio core:
 `run-open-not-allowed` · `run-attached` · `run-already-open` · `run-id-invalid` ·
 `request-invalid` · `step-id-missing` · `step-unknown` · `step-already-started` ·
 `step-already-finished` · `result-invalid` · `failure-missing` · `evidence-digest-mismatch` ·
-`evidence-kind-unknown` · `event-invalid` · `event-schema-unknown` · `test-run-closed`.
+`evidence-kind-unknown` · `event-invalid` · `event-schema-unknown`.
+
+A call made with the credential of a test run that has been closed is refused `403
+run-credential-invalid` (section 5): closing revokes the credential, and there is no separate code
+for it.
 
 The Mocks Studio core's reason codes are in Appendix C.
 
@@ -217,11 +256,18 @@ they compile in Go and in the regular-expression dialects most JSON Schema valid
 
 ## 12. Running the conformance suite
 
+Building the suite needs **Go 1.26 or newer** (the `go` directive of `conformance/go.mod`).
+
 ```
 go -C conformance build -o /path/to/tests-conformance ./cmd/tests-conformance
 /path/to/tests-conformance --items 3 --mode standalone -- <your adapter command> <its arguments>
 /path/to/tests-conformance --items 3 --mode leg        -- <your adapter command> <its arguments>
 ```
+
+**Continuous integration MUST set `TESTS_CONFORMANCE_REQUIRE_SOCKETS=1` when it runs `go test` in
+`conformance/`.** The tests that start the stubs on loopback skip themselves where loopback is
+denied, and `go test` still exits 0; with the variable set they fail instead, so a skipped
+measurement cannot read as a pass.
 
 `--items` is the number of test items in your sample project. The sample project MUST hold a
 passing, a failing and a skipped test, and at least one test MUST call the stand-in
@@ -230,9 +276,23 @@ system under test at `$TESTS_CONFORMANCE_SUT_URL` (any path under it, say `/sut/
 the Mocks Studio core. Run it in both modes. `--spec-dir` names the `spec/` directory (found by
 searching upwards otherwise); `--timeout` bounds the adapter's run (default 120 s).
 
+**The timeout bounds the whole process tree.** On Unix the runner starts your command in a process
+group of its own and kills the whole group at the timeout, so a test worker, a browser or a shell's
+child dies with it. Anywhere else only the command itself is killed. In both cases the runner then
+waits at most `--wait-delay` (default 5 s) for any descendant that still holds the command's
+output, and closes the pipes.
+
 The runner starts a **recording stub core** (section 6) and a **stub Mocks Studio core**
 (Appendix C) on loopback, starts your command with their URLs and credentials in its environment
-(section 4, plus `TESTS_CONFORMANCE_SUT_URL`), and checks every recorded call. It prints one line
+(section 4, plus `TESTS_CONFORMANCE_SUT_URL`), and checks every recorded call.
+
+**The adapter's environment is scrubbed.** Your command receives the variables of section 4, then
+only these variables of the host, when they are set: `PATH`, `HOME`, `TMPDIR`, `LANG`, `GOCACHE`,
+`GOMODCACHE`, `GOFLAGS`, `VIRTUAL_ENV`, `NODE_PATH`, `PLAYWRIGHT_BROWSERS_PATH`, and, for Windows,
+`SystemRoot`, `SystemDrive`, `ComSpec`, `PATHEXT`, `USERPROFILE`, `TEMP`, `TMP`, `APPDATA`,
+`LOCALAPPDATA`. Nothing else of the host reaches it, so a host secret cannot leak into the adapter
+or its output. If your framework needs another variable, name it with `--pass-env NAME[,NAME...]`
+(for example `--pass-env PYTHONPATH,PYTEST_ADDOPTS`). It prints one line
 per check, `PASS <check-id> — <what was measured>` or `FAIL <check-id> — <what was measured>`.
 Lines that begin `remark: ` are measurement caveats, not checks.
 
@@ -256,18 +316,21 @@ The adapter's own exit status is not checked: a test framework exits non-zero wh
 | `run-opened` | standalone: one test run opened; leg: one attach to the leg's run with the leg's credential |
 | `no-second-run` | leg: no run opened of any kind; standalone: exactly one open |
 | `step-per-item` | each of the `--items` test items became exactly one step with a unique `step_id` and exactly one result carrying it |
-| `step-result-valid` | every result is `pass`, `fail`, `error` or `skip`, with a duration, and failure text where failing |
+| `step-result-valid` | every result is `pass`, `fail`, `error` or `skip`, carries a `duration_ms` of 0 or more (an absent one fails), and carries failure text where failing |
 | `traceparent-to-sut` | every request the system under test received carried exactly a `traceparent` and `baggage` the core handed out, and at least one arrived |
-| `evidence-digest` | every evidence upload declares the SHA-256 of its own bytes, with a known kind |
-| `events-valid` | every emitted event validates against `tests.event/v1` and carries this run's ids; the four required kinds were seen |
+| `evidence-digest` | every evidence upload declares the SHA-256 of its own bytes, with a known kind, and its `Tests-Step-Id` names a step the core accepted |
+| `events-valid` | every emitted event validates against `tests.event/v1` and carries this run's ids; each step event carries the `correlation_id` `startStep` returned; the four required kinds were each accepted (`202`) |
 | `run-result-schema` | the published run result validates, repeats the core's `events_digest`, and its evidence line is on standard output |
 | `run-result-counts` | the counts equal the steps and results the core saw, and the verdict follows from them |
 | `credential-presented` | every call that needs a credential presented its own run's |
 | `credential-not-leaked` | no credential appears in an event, the run result or the adapter's output |
 | `mock-control-bypass` | no call reached a mock's own URL |
 
-A check never passes for lack of evidence: where there is nothing to measure (no events, no
-evidence, no request at the system under test), the check fails and says so.
+A check that measures something the adapter must DO fails when there is nothing to measure: no
+events, no evidence, no request at the system under test, no step result, no run result. The three
+checks that measure something the adapter must NOT do (`no-second-run`, `credential-not-leaked`,
+`mock-control-bypass`) pass when they observe no violation; their output says how many calls they
+looked at, and a run that made no call at all never reaches them (exit 3).
 
 **Mutants.** The suite's own fixture adapter (`conformance/internal/sampleadapter`, run over the
 sample project in `conformance/testdata/sample-project`) passes every check. Each mutant breaks one

@@ -73,12 +73,38 @@ paths:
                 test_run_id: { $ref: '#/components/schemas/RunId' }
                 reset: { type: boolean, default: true }
       responses:
-        '200': { description: Attached; scope.reset emitted when reset is true }
+        '200':
+          description: Attached; scope.reset emitted when reset is true. The body is the run with its endpoints (never the credential).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
         '409': { $ref: '#/components/responses/Refused' }
     delete:
       operationId: detachTestRun
       responses:
         '204': { description: Detached }
+  /v1/runs/{run_id}/test-runs/{test_run_id}/event-ids:
+    parameters:
+      - { $ref: '#/components/parameters/RunId' }
+      - { name: test_run_id, in: path, required: true, schema: { $ref: '#/components/schemas/RunId' } }
+    get:
+      operationId: getTestRunEventIds
+      summary: The event ids of one attached test run, sorted, with the core's digest of them (ADR section 6)
+      responses:
+        '200':
+          description: Sorted ids and their digest (layout in ADR section 6)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [run_id, test_run_id, event_ids, events_digest]
+                properties:
+                  run_id: { $ref: '#/components/schemas/RunId' }
+                  test_run_id: { $ref: '#/components/schemas/RunId' }
+                  event_ids: { type: array, items: { type: string } }
+                  events_digest: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        '404': { $ref: '#/components/responses/Refused' }
   /v1/runs/{run_id}/reset:
     parameters: [ { $ref: '#/components/parameters/RunId' } ]
     post:

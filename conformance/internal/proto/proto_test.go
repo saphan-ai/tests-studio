@@ -19,6 +19,7 @@ var digestVectors = []struct {
 }{
 	{"the empty set digests the empty input", nil, "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
 	{"one id", []string{"evt-0001"}, "sha256:d5c51f60239f4d48591a58b5a6aad406fef54315c27eea24f38d800b922d38e4"},
+	{"an id given twice counts once", []string{"evt-0001", "evt-0001"}, "sha256:d5c51f60239f4d48591a58b5a6aad406fef54315c27eea24f38d800b922d38e4"},
 	{"three ids given unsorted", []string{"evt-0003", "evt-0001", "evt-0002"}, "sha256:80e903cace39e18ffd3b42682fa4a5ac5cc3399b3570ddde071daefc295bb7c5"},
 	{"ids that differ in case and punctuation sort by byte", []string{"evt-b", "evt-B", "evt-a.1", "evt-a-1"}, "sha256:d6b0186f9a60e0bd8323617e33d6494898e1ac37cb7150defd589a1b727351f1"},
 }

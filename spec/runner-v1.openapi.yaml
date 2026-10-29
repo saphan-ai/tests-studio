@@ -304,7 +304,7 @@ components:
         reason_code:
           type: string
           description: Public contract key.
-          examples: [spec-version-unsupported, run-credential-missing, run-credential-invalid, run-open-not-allowed, run-attached, run-already-open, run-id-invalid, request-invalid, step-id-missing, step-unknown, step-already-started, step-already-finished, result-invalid, failure-missing, evidence-digest-mismatch, evidence-kind-unknown, event-invalid, event-schema-unknown, test-run-closed]
+          examples: [spec-version-unsupported, run-credential-missing, run-credential-invalid, run-open-not-allowed, run-attached, run-already-open, run-id-invalid, request-invalid, step-id-missing, step-unknown, step-already-started, step-already-finished, result-invalid, failure-missing, evidence-digest-mismatch, evidence-kind-unknown, event-invalid, event-schema-unknown]
         allowed: { type: array, items: { type: string } }
   responses:
     Refused:

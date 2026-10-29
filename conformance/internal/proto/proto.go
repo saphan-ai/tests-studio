@@ -168,13 +168,17 @@ func EvidenceLine(runID, testRunID, verdict, eventsDigest string) string {
 	return "- evidence: tests-studio-run " + runID + "/" + testRunID + " verdict=" + verdict + " events=" + eventsDigest
 }
 
-// EventsDigest is SHA-256 over the sorted event ids, each followed by one "\n" byte, printed as
-// "sha256:" and 64 lowercase hex characters. An empty set digests the empty input.
+// EventsDigest is SHA-256 over the set of event ids, sorted ascending by their UTF-8 bytes, each
+// followed by one "\n" byte, printed as "sha256:" and 64 lowercase hex characters. An id given
+// more than once counts once. An empty set digests the empty input.
 func EventsDigest(eventIDs []string) string {
 	ids := append([]string(nil), eventIDs...)
-	sort.Strings(ids)
+	sort.Strings(ids) // Go compares strings byte by byte, which is the UTF-8 order
 	h := sha256.New()
-	for _, id := range ids {
+	for i, id := range ids {
+		if i > 0 && id == ids[i-1] {
+			continue
+		}
 		h.Write([]byte(id))
 		h.Write([]byte{'\n'})
 	}
