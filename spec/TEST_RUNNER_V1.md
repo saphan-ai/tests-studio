@@ -1,4 +1,4 @@
-# Test runner specification, version 1.1
+# Test runner specification, version 1.2
 
 This document tells you how to write a **runner adapter**: a small piece of code that makes a test
 framework (pytest, Playwright, Go's `testing`, anything) report to a Tests Studio core. You do not
@@ -13,6 +13,11 @@ version `v1` (the string in `Tests-Spec-Version`, `emitter.spec` and `adapter.sp
 change), every v1.1 rule is additive except where section 14 says otherwise, and every rule
 a v1 adapter already followed still holds. Section 14 lists what v1.1 states, with the number of
 each ruling.
+
+**Version 1.2 adds a second profile and nothing else.** An adapter that can only read a framework's
+results after the run states that it uses the `import` profile (section 1.1) and is judged by the
+suite on every rule it can keep. The wire protocol is still `v1`, no request, response or schema
+changes, and what an existing adapter does is unchanged. Section 15 lists the changes.
 
 ## 1. What an adapter does
 
@@ -30,6 +35,39 @@ a run of them into a conversation with the core:
 
 If a test needs a mock to behave in a certain way (a slow reply, an error), the adapter sets that
 through the **Mocks Studio core**, never through the mock itself (section 8).
+
+### 1.1 Profiles
+
+An adapter works in one of two profiles. The profile changes when the adapter learns what a test
+did; it changes nothing on the wire, which is `v1` in both.
+
+- **`live`** is the behaviour of sections 1 to 14, and the default. The adapter starts a step
+  before the test runs and hands the step's `traceparent` to the test, so the system under test
+  carries it.
+- **`import`** is for a runner that can only read a framework's results after the run (JUnit XML
+  written by jest, Maven, Gradle, dotnet or cargo, for example). It runs the framework, or reads
+  the framework's result file, and then, for each item in order, starts a step and finishes it with
+  the item's real outcome, its **real duration as the result file records it** and its failure text.
+  Evidence is attached as usual, and at least the result file itself. Events, `closeTestRun` and the
+  run result are exactly those of `live`. An import adapter states in its own documentation that it
+  uses this profile, and it **never claims** that a `traceparent` reached the system under test:
+  by the time it starts a step the test has already run.
+
+The suite judges an adapter under one profile, named with `--profile live|import` (section 12;
+`live` when the flag is absent). Under `import` it runs every check. Two answers change, and both
+become **NOT APPLICABLE, with the reason** `the import profile reports after the run, so no test
+could carry a traceparent` (never PASS, and never left out):
+
+- `traceparent-to-sut`;
+- the half of `sample-composition` about requests reaching the stand-in system. The other half
+  still holds: the accepted results MUST hold a `pass`, a `fail` and a `skip`, and a run that lacks
+  one FAILS the check; a run that has them answers NOT APPLICABLE.
+
+Every other check is unchanged. NOT APPLICABLE is neither a pass nor a failure. A request at the
+stand-in system is not forbidden under `import`, so an adapter that sends a correlated one is still
+accepted, and a `live` adapter judged under `import` passes too. The profile is not a way to avoid a
+rule: judged under `live`, an adapter whose tests send no request to the stand-in system still
+FAILS `traceparent-to-sut`.
 
 ## 2. Ids and formats
 
@@ -365,6 +403,9 @@ go -C conformance build -o /path/to/tests-conformance ./cmd/tests-conformance
 /path/to/tests-conformance --items 4 --mode leg        -- <your adapter command> <its arguments>
 ```
 
+An adapter of the `import` profile (section 1.1) adds `--profile import` to both commands; the
+default is `--profile live`.
+
 **Continuous integration MUST set `TESTS_CONFORMANCE_REQUIRE_SOCKETS=1` when it runs `go test` in
 `conformance/`.** The tests that start the stubs on loopback skip themselves where loopback is
 denied, and `go test` still exits 0; with the variable set they fail instead, so a skipped
@@ -399,13 +440,16 @@ only these variables of the host, when they are set: `PATH`, `HOME`, `TMPDIR`, `
 or its output. If your framework needs another variable, name it with `--pass-env NAME[,NAME...]`
 (for example `--pass-env PYTHONPATH,PYTEST_ADDOPTS`). It prints one line
 per check, `PASS <check-id> — <what was measured>` or `FAIL <check-id> — <what was measured>`.
-Lines that begin `remark: ` are measurement caveats, not checks.
+Lines that begin `remark: ` are measurement caveats, not checks. Under `--profile import` a check
+that is not applicable prints `NOT APPLICABLE <check-id> — <the reason>`, and the summary names
+them: `SUMMARY 15 checks, 13 passed, 0 failed, 2 not applicable (import profile)`. A `live` run
+never prints `NOT APPLICABLE`, and its output is unchanged.
 
 **Exit codes**
 
 | code | meaning |
 |---|---|
-| 0 | every check passed |
+| 0 | no check failed (every check passed or, under the `import` profile, was not applicable) |
 | 1 | a check failed |
 | 2 | the adapter was refused before checking: it declared a spec version the core does not serve |
 | 3 | the adapter's command could not be started, or it never reached the core |
@@ -477,6 +521,10 @@ name when `MOCKS_CORE_URL` and the answer's `mocks_core_url` differ (ruling 9). 
 re-attach in a leg (ruling 12) passes `no-second-run`: the check's own test feeds it attach, close,
 attach, close.
 
+Run with `--profile import`, the fixture adapter runs the sample project's items first, writes a JUnit
+XML file of their outcomes and durations, and reports from that file (section 1.1); it is accepted
+in both modes, and every mutant above still fails exactly the check in its row.
+
 ## 13. What this specification does not cover
 
 The core itself (runs, storage, evidence, scheduling), the console, and any particular framework's
@@ -531,3 +579,21 @@ What v1 passed and v1.1 FAILS — behaviours v1 was silent on, each now refused:
 6. a result sent without its `step_id`, whatever followed it (`step-per-item`).
 
 Everything else v1.1 adds is either a clarification the suite does not observe or a loosening.
+
+## 15. Changes in v1.2
+
+Version 1.2 adds the `import` profile and changes nothing an existing adapter does. The wire protocol
+is unchanged (`v1`); no request, response or schema gains a field, and no reason code is added.
+
+| ruling | what v1.2 states | section |
+|---|---|---|
+| 1 | there are two profiles on one wire: `live` (the default, the behaviour of v1.1) and `import` | 1.1 |
+| 2 | an `import` adapter reads the framework's results after the run, then for each item in order starts a step and finishes it with the real outcome, the real duration from the result file and the failure text; evidence, events, `closeTestRun` and the run result are those of `live`; it states its profile in its documentation and never claims a `traceparent` reached the system under test | 1.1 |
+| 3 | `tests-conformance --profile import` runs every check; `traceparent-to-sut` and the stand-in-system half of `sample-composition` answer NOT APPLICABLE with the reason, and the summary names them; every other check is unchanged | 1.1, 12 |
+| 4 | a check result has a third state, not applicable: neither a pass nor a failure, and the exit code is 0 only when no check failed | 12 |
+| 5 | the fixture adapter accepts `--profile import` and reports from a JUnit XML file it writes after running the items; every mutant fails the same check under it | 12 |
+| 6 | a request at the stand-in system is not forbidden under `import`, a `live` adapter judged under `import` passes, and a run judged under `live` that sends none still FAILS `traceparent-to-sut` | 1.1 |
+
+**What v1.1 passed and v1.2 fails:** nothing. The suite counts are unchanged (fifteen checks, eighteen
+mutants, a sample project of four items); `--profile` is a new flag and its default is the old
+behaviour.
