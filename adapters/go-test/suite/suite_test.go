@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -14,6 +15,10 @@ import (
 // requireSocketsEnv is the suite's own convention (spec/TEST_RUNNER_V1.md section 12): the tests
 // that need loopback skip themselves where it is denied, and fail where this variable is set.
 const requireSocketsEnv = "TESTS_CONFORMANCE_REQUIRE_SOCKETS"
+
+// allPassed matches the suite's summary line when every check it ran passed, whatever their number:
+// the count grows with the specification (13 checks in v1, 15 in v1.1).
+var allPassed = regexp.MustCompile(`SUMMARY ([1-9][0-9]*) checks, ([1-9][0-9]*) passed, 0 failed`)
 
 // sampleItems is the number of test items in testdata/sample.
 const sampleItems = "4"
@@ -58,7 +63,8 @@ func TestConformanceSuiteAcceptsTheAdapter(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tests-conformance --mode %s: %v", mode, err)
 			}
-			if strings.Contains(string(out), "FAIL ") || !strings.Contains(string(out), "SUMMARY 13 checks, 13 passed, 0 failed") {
+			m := allPassed.FindStringSubmatch(string(out))
+			if strings.Contains(string(out), "FAIL ") || m == nil || m[1] != m[2] {
 				t.Errorf("not every check passed in %s mode", mode)
 			}
 		})
