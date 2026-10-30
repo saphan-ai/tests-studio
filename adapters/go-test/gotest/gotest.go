@@ -27,8 +27,42 @@ type Runner struct {
 	Dir      string   // working directory of the go commands; the current one when empty
 }
 
+// refusedFlags are the go test flags that change which tests run, how often, or how the output is
+// shaped, and so make an item's reported result differ from what the test did: the adapter passes
+// `-count=1 -run ^Name$` itself and reads `-json` itself, and the go command keeps the last value.
+var refusedFlags = []string{"run", "skip", "count", "list", "json"}
+
+// CheckArgs refuses go test flags (after `--`) that would make the adapter report a verdict it did
+// not measure. It names the flag and the next act. Both the -flag and the -test.flag spellings,
+// with one or two dashes and with or without =value, are refused; everything after -args belongs
+// to the test binary and is not looked at.
+func CheckArgs(goArgs []string) error {
+	for _, a := range goArgs {
+		if a == "-args" || a == "--args" {
+			return nil
+		}
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		name = strings.TrimPrefix(name, "test.")
+		for _, f := range refusedFlags {
+			if name == f {
+				return fmt.Errorf("the go test flag -%s after `--` was refused, because it would make a reported result differ from what the test did "+
+					"(the adapter runs every test once, by its own name, and reads the result itself; -%s would override that, "+
+					"so a failed test could be reported as passed or a listed test as an error). "+
+					"NEXT — remove -%s (all of -%s are refused) and run again; to run fewer tests, name fewer packages", f, f, f, strings.Join(refusedFlags, ", -"))
+			}
+		}
+	}
+	return nil
+}
+
 // List implements reporter.Runner.
 func (r Runner) List(ctx context.Context) ([]reporter.Item, error) {
+	if err := CheckArgs(r.GoArgs); err != nil {
+		return nil, err
+	}
 	args := append([]string{"test", "-list", ".*"}, r.GoArgs...)
 	args = append(args, r.Packages...)
 	out, err := r.command(ctx, args...).CombinedOutput()
@@ -160,8 +194,10 @@ func Classify(name string, jsonOutput []byte, wall time.Duration) reporter.Outco
 	text := strings.TrimSpace(strings.Join(testOut, ""))
 	switch {
 	case result == "":
-		pkg := strings.TrimSpace(strings.Join(pkgOut, ""))
-		return reporter.Outcome{Result: reporter.ResultError, Duration: duration, Failure: pkg, Output: pkg}
+		// No result event: a timeout or a crash. What the test itself printed (the panic and goroutine
+		// dump of a timeout) is the cause, so it goes first, together with the package's output.
+		both := strings.TrimSpace(strings.Join(append(testOut, pkgOut...), ""))
+		return reporter.Outcome{Result: reporter.ResultError, Duration: duration, Failure: both, Output: both}
 	case result == "skip":
 		return reporter.Outcome{Result: reporter.ResultSkip, Duration: duration, Output: text}
 	case result == "pass":

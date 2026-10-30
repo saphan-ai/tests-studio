@@ -83,6 +83,12 @@ func TestClassify(t *testing.T) {
 		{"another test's output is not this test's", events(t, out("TestY", "other text\n"), done("TestX", "fail", 0)), reporter.ResultFail, "", 0},
 		{"a panic is an error", events(t, out("TestX", "panic: boom\n"), done("TestX", "fail", 0)), reporter.ResultError, "panic: boom", 0},
 		{"no result is an error with the package's output", events(t, out("", "FAIL p [build failed]\n"), done("", "fail", 0)), reporter.ResultError, "build failed", 5 * time.Second},
+		// the stream `go test -json -timeout 1s` prints for a test that sleeps: the test's own output
+		// carries the panic, and no pass or fail event follows for it
+		{"a timeout keeps the test's own output", events(t,
+			out("TestX", "=== RUN   TestX\n"),
+			out("TestX", "panic: test timed out after 1s\n\trunning tests:\n\t\tTestX (1s)\n\ngoroutine 7 [running]:\n"),
+			out("", "FAIL\tp\t1.197s\n"), done("", "fail", 1.2)), reporter.ResultError, "test timed out after 1s", 5 * time.Second},
 		{"a line that is not an event is kept as output", []byte("not json: build error\n"), reporter.ResultError, "build error", 5 * time.Second},
 		{"empty output is an error", nil, reporter.ResultError, "", 5 * time.Second},
 	}
@@ -163,6 +169,43 @@ func TestRunnerOverRealGoTests(t *testing.T) {
 		if k == "MOCKS_RUN_TOKEN" || k == "TESTS_RUN_TOKEN" {
 			t.Errorf("the test inherited the adapter's credential variable %s", k)
 		}
+	}
+}
+
+// The go flags that change what a test run means are refused: a user's -count=3 or -run would
+// otherwise turn a failed test into a pass, or a listed test into an error, with no word said.
+// The negative control is the GoArgs field itself: the same runner with none lists and runs cleanly.
+func TestRunnerRefusesGoFlagsThatMisreportAResult(t *testing.T) {
+	cases := []struct {
+		name string
+		pkg  string
+		args []string
+		flag string
+	}{
+		{"-count=3 over a test that fails only on its first run", "../testdata/flaky", []string{"-count=3"}, "-count"},
+		{"-run over two tests", "../testdata/twotests", []string{"-run", "TestAlpha"}, "-run"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clean := gotest.Runner{Packages: []string{c.pkg}, Environ: os.Environ()}
+			items, err := clean.List(context.Background())
+			if err != nil || len(items) == 0 {
+				t.Fatalf("the control run listed %+v, %v", items, err)
+			}
+			r := gotest.Runner{Packages: []string{c.pkg}, GoArgs: c.args, Environ: os.Environ()}
+			_, err = r.List(context.Background())
+			if err == nil {
+				var got []string
+				for _, it := range items {
+					o := r.Run(context.Background(), it, nil)
+					got = append(got, it.Name+"="+o.Result+" "+strings.ReplaceAll(o.Failure, "\n", "|"))
+				}
+				t.Fatalf("%v was not refused; the adapter went on to report %v", c.args, got)
+			}
+			if !strings.Contains(err.Error(), c.flag) {
+				t.Errorf("the refusal %q does not name %s", err, c.flag)
+			}
+		})
 	}
 }
 

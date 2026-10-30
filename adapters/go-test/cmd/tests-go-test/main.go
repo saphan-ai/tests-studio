@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -51,14 +52,23 @@ func run(ctx context.Context, args, environ []string, stdout, stderr io.Writer) 
 	if len(pkgs) == 0 {
 		pkgs = []string{"."}
 	}
-	base := reporter.Scrub(environ)
+	if err := gotest.CheckArgs(goArgs); err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", reporter.Name, err)
+		return reporter.ExitRefused
+	}
+	runner := newRunner(environ, pkgs, goArgs)
 	if *project == "" {
-		*project = defaultProject(ctx, base)
+		*project = defaultProject(ctx, runner.Environ)
 	}
 	return reporter.Run(ctx, reporter.Config{
-		Environ: environ, Project: *project, Mocks: mocks, Stdout: stdout, Stderr: stderr,
-		Runner: gotest.Runner{Packages: pkgs, GoArgs: goArgs, Environ: base},
+		Environ: environ, Project: *project, Mocks: mocks, Stdout: stdout, Stderr: stderr, Runner: runner,
 	})
+}
+
+// newRunner builds the runner of every go command. Its environment is the adapter's own with the
+// adapter's credentials removed, so that the user's tests never inherit them.
+func newRunner(environ, pkgs, goArgs []string) gotest.Runner {
+	return gotest.Runner{Packages: pkgs, GoArgs: goArgs, Environ: reporter.Scrub(environ)}
 }
 
 // defaultProject is the module path of the current directory, or the directory's own name.
