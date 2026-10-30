@@ -31,6 +31,17 @@ tests-go-test [-project NAME] [-mock NAME]... [packages] [-- go test flags]
 - `-mock` asks for a mock when a standalone test run is opened; repeat it for several.
 - Everything after `--` is added to every `go test` the adapter starts, for example
   `tests-go-test ./... -- -race -tags integration`.
+- **Refused flags.** `-run`, `-skip`, `-count`, `-list` and `-json` (also as `-test.run` and so on,
+  with `-` or `--`, with or without `=value`) are refused after `--`: the adapter runs each test
+  once by its own name and reads the result itself, so one of these would make it report a result
+  the test did not have (`-count=3` hides a failure on an earlier repetition; `-run X` turns every
+  other listed test into an error). The refusal names the flag, ends the run with exit `2` and
+  never reaches the core. To run fewer tests, name fewer packages. Anything after `-args` goes to
+  the test binary and is not looked at.
+- **Where a failure's text is.** The adapter does not print the tests' output. What a test prints is
+  uploaded to the core as `log` evidence of its step, and a failure's text is the step's result in
+  the core; the terminal shows only the evidence line. To read a failure, open the run in the core,
+  or run that one test with plain `go test -run '^TestName$' ./pkg`.
 
 What it does, in the order the specification gives:
 
@@ -115,6 +126,14 @@ same from a test; it skips, naming itself, where loopback is denied, and fails w
   `TestMain`, package `init` and any setup run once per test rather than once per package. A test
   that depends on another test having run first, or on state a previous test left behind, will
   not work under the adapter.
+- **What that costs, measured** (go1.26, darwin/arm64, 2026-10-30): about 0.35 s per item for a
+  trivial test with a warm build cache (two runs of one test), and about 2 s per item over a nine-test
+  run of two packages that included the first links. Budget on the order of a second per test, so
+  a package of 1,000 tests adds several minutes; your own figure is `time tests-go-test ./pkg`
+  divided by the number of tests.
+- **`-timeout` applies to each test**, not to the package, because each test is a `go test` of its
+  own. A test killed at its timeout is reported `error`, and its panic text (`test timed out`) is
+  in the failure text and the log evidence.
 - **Only top-level tests are items.** A subtest is part of its parent: it is not a step of its own,
   and a failing subtest fails the parent step with the subtest's output as the failure text.
 - **Tests run one after another**, not in parallel with each other (`t.Parallel` still works inside
