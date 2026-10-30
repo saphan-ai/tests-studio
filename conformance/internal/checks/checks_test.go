@@ -161,3 +161,22 @@ func TestEvidenceDigestRejectsEvidenceAfterAcceptedClose(t *testing.T) {
 	}
 }
 
+// TestSampleCompositionRejectsNoSUTRequest pins review condition 4's second survivor: a sample
+// composition whose accepted results hold pass, fail and skip but whose tests never reached the
+// stand-in system must FAIL sample-composition. It is green today because the no-/sut/ guard
+// exists; removing the guard makes it red.
+func TestSampleCompositionRejectsNoSUTRequest(t *testing.T) {
+	t.Parallel()
+	in := Input{
+		Calls: []stubs.Call{
+			{Seq: 1, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/step-results", Header: http.Header{}, Status: http.StatusNoContent, Body: []byte(`{"step_id":"s1","result":"pass","duration_ms":1}`)},
+			{Seq: 2, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/step-results", Header: http.Header{}, Status: http.StatusNoContent, Body: []byte(`{"step_id":"s2","result":"fail","duration_ms":1,"failure":"boom"}`)},
+			{Seq: 3, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/step-results", Header: http.Header{}, Status: http.StatusNoContent, Body: []byte(`{"step_id":"s3","result":"skip","duration_ms":1}`)},
+			// no request at all reached the stand-in system under test
+		},
+	}
+	got := sampleComposition(in, facts{})
+	if got.Pass {
+		t.Fatalf("want sample-composition FAIL with zero /sut/ requests; got %s", got.Line())
+	}
+}
