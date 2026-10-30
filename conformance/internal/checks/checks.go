@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/saphan-ai/tests-studio/conformance/internal/proto"
@@ -85,6 +87,7 @@ func All(in Input) []Result {
 type facts struct {
 	opened      *proto.TestRunOpened // the accepted open or attach answer
 	closeResult *proto.RunResult     // the accepted close answer
+	closeSeq    int                  // the seq of the accepted closeTestRun call, if any
 	issued      map[string]proto.StepStarted
 	secrets     []string
 }
@@ -132,6 +135,7 @@ func derive(in Input) facts {
 			var r proto.RunResult
 			if json.Unmarshal(c.Response, &r) == nil {
 				f.closeResult = &r
+				f.closeSeq = c.Seq
 			}
 		}
 	}
@@ -360,6 +364,9 @@ func evidenceDigest(in Input, f facts) Result {
 			continue
 		}
 		n++
+		if f.closeResult != nil && c.Seq > f.closeSeq {
+			return fail(IDEvidenceDigest, "call %d (%s %s) was recorded after the accepted closeTestRun (call %d); evidence must precede the close of its test run (section 6.2: closing revokes the credential, section 5)", c.Seq, c.Method, redactPath(c.Path), f.closeSeq)
+		}
 		declared := c.Path[strings.LastIndex(c.Path, "/")+1:]
 		if got := proto.SHA256Digest(c.Body); got != "sha256:"+declared {
 			return fail(IDEvidenceDigest, "call %d declared sha256:%s and its %d bytes hash to %s", c.Seq, declared, len(c.Body), got)
@@ -408,7 +415,7 @@ func eventsValid(in Input, f facts) Result {
 		if err := in.Validator.ValidateEvent(c.Body); err != nil {
 			return fail(IDEventsValid, "event in call %d (kind %q) is not a valid tests.event/v1: %s", c.Seq, head.Kind, firstLine(err.Error()))
 		}
-		if prev, seen := byID[head.EventID]; seen && !bytes.Equal(prev, c.Body) {
+		if prev, seen := byID[head.EventID]; seen && !sameEvent(prev, c.Body) {
 			return fail(IDEventsValid, "event in call %d (kind %q) reuses event_id %q for a different event; an event_id names one event within the test run (re-sending the same document is allowed)", c.Seq, head.Kind, head.EventID)
 		}
 		byID[head.EventID] = c.Body
@@ -430,6 +437,35 @@ func eventsValid(in Input, f facts) Result {
 		}
 	}
 	return ok(IDEventsValid, "%d events, each valid against tests.event/v1 and carrying this run's ids; kinds %s all seen", n, strings.Join(requiredEventKinds, ", "))
+}
+
+// sameEvent reports whether two event bodies are the same document, per section 2 and ruling 16:
+// equal as JSON values (numbers decoded as json.Number, so 1 and 1.0 differ; the text says
+// nothing either way). A body that does not decode as a single JSON document is compared as raw
+// bytes.
+func sameEvent(a, b []byte) bool {
+	va, okA := decodeJSONDocument(a)
+	vb, okB := decodeJSONDocument(b)
+	if !okA || !okB {
+		return bytes.Equal(a, b)
+	}
+	return reflect.DeepEqual(va, vb)
+}
+
+// decodeJSONDocument decodes exactly one JSON document from body (numbers as json.Number) and
+// reports whether body held nothing but that document and whitespace.
+func decodeJSONDocument(body []byte) (any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
+	}
+	var rest any
+	if err := dec.Decode(&rest); err != io.EOF {
+		return nil, false // trailing data after the document: not one clean value
+	}
+	return v, true
 }
 
 func firstLine(s string) string {
@@ -595,13 +631,13 @@ func sampleComposition(in Input, _ facts) Result {
 		}
 	}
 	sut := count(in, func(c stubs.Call) bool { return c.Service == stubs.ServiceWorld && strings.HasPrefix(c.Path, "/sut/") })
+	if sut == 0 {
+		return fail(IDComposition, "the stand-in system under test received no request; at least one test of the sample project must call it")
+	}
 	for _, want := range []string{"pass", "fail", "skip"} {
 		if seen[want] == 0 {
 			return fail(IDComposition, "no accepted step result is %q; the sample project must hold a passing, a failing and a skipped test (accepted results: %v)", want, seen)
 		}
-	}
-	if sut == 0 {
-		return fail(IDComposition, "the stand-in system under test received no request; at least one test of the sample project must call it")
 	}
 	return ok(IDComposition, "the accepted results hold %d pass, %d fail, %d skip, and %d requests reached the stand-in system", seen["pass"], seen["fail"], seen["skip"], sut)
 }
