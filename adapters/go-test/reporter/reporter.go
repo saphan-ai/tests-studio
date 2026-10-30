@@ -227,7 +227,7 @@ func (r *reporter) runItem(ctx context.Context, it Item, id string, counts *Coun
 	r.attachLog(ctx, id, ss.CorrelationID, display, out.Output)
 	failure := ""
 	if out.Result == ResultFail || out.Result == ResultError {
-		failure = r.redact(truncate(out.Failure, maxFailureBytes))
+		failure = truncate(r.redact(out.Failure), maxFailureBytes)
 		if strings.TrimSpace(failure) == "" {
 			failure = "the test did not pass and left no output"
 		}
@@ -248,9 +248,10 @@ func (r *reporter) runItem(ctx context.Context, it Item, id string, counts *Coun
 }
 
 // attachLog stores what the test printed as log evidence of its step. The evidence is addressed by
-// the SHA-256 of the exact bytes sent, which are the output with every credential removed.
+// the SHA-256 of the exact bytes sent, which are the output with every credential removed (redacted
+// first and cut afterwards, so a credential across the cut cannot leave a prefix).
 func (r *reporter) attachLog(ctx context.Context, stepID, correlation, display, output string) {
-	data := []byte(r.redact(truncate(output, maxEvidenceBytes)))
+	data := []byte(truncate(r.redact(output), maxEvidenceBytes))
 	if len(data) == 0 {
 		return
 	}

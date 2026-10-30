@@ -466,10 +466,45 @@ func TestCredentialsNeverReachAnyOutput(t *testing.T) {
 	if !strings.Contains(failure, "[redacted]") {
 		t.Errorf("failure text %q was not redacted", failure)
 	}
-	for _, env := range runner.handed {
-		if strings.Contains(strings.Join(env, " "), "TOKEN") {
-			t.Errorf("a test was handed %v", env)
+	// What reporter.Run hands each test is only the step's trace context. That the runner's own
+	// environment carries no credential is tested where the runner is built (cmd/tests-go-test).
+	for name, env := range runner.handed {
+		if len(env) != 2 || !strings.HasPrefix(env[0], "TESTS_STEP_TRACEPARENT=") || !strings.HasPrefix(env[1], "TESTS_STEP_BAGGAGE=") {
+			t.Errorf("%s was handed %v, want only the step's traceparent and baggage", name, env)
 		}
+	}
+}
+
+// A credential that straddles the size cut must not leave a prefix behind: the text is redacted
+// first and cut afterwards. The token starts a few bytes before the cut, so a cut-then-redact
+// order would keep its first bytes and no longer match the whole.
+func TestACredentialAcrossTheTruncationCutIsRedacted(t *testing.T) {
+	const failureCut, evidenceCut = 8<<10 - len("\n…[truncated]"), 1<<20 - len("\n…[truncated]")
+	straddle := func(cut int) string {
+		return strings.Repeat("x", cut-8) + testToken + strings.Repeat("y", 64)
+	}
+	core := &fakeCore{versions: []string{"v1"}}
+	runner := sampleRunner()
+	runner.outcomes["TestFails"] = reporter.Outcome{Result: "fail", Failure: straddle(failureCut), Output: straddle(evidenceCut)}
+	run(t, core, runner)
+	prefix := testToken[:6]
+	var failure string
+	for _, res := range core.results {
+		if f, _ := res["failure"].(string); strings.Contains(f, "xxxx") {
+			failure = f
+		}
+	}
+	if failure == "" || strings.Contains(failure, prefix) {
+		t.Errorf("failure text (%d bytes) is missing or keeps the credential's prefix %q", len(failure), prefix)
+	}
+	var log string
+	for _, e := range core.evidence {
+		if strings.Contains(e.body, "xxxx") {
+			log = e.body
+		}
+	}
+	if log == "" || strings.Contains(log, prefix) {
+		t.Errorf("log evidence (%d bytes) is missing or keeps the credential's prefix %q", len(log), prefix)
 	}
 }
 
