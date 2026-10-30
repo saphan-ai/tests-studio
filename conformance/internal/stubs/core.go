@@ -41,6 +41,28 @@ var (
 
 type step struct {
 	started, finished bool
+	result            string // the accepted result, when finished
+}
+
+// tally counts the test run the way ruling 1 of v1.1 says the core does: total is the steps
+// started, the four others are the results accepted. A refused result is not counted.
+func (tr *testRun) tally() (c proto.Counts, unfinished int) {
+	for _, st := range tr.steps {
+		c.Total++
+		switch {
+		case !st.finished:
+			unfinished++
+		case st.result == "pass":
+			c.Passed++
+		case st.result == "fail":
+			c.Failed++
+		case st.result == "error":
+			c.Errored++
+		case st.result == "skip":
+			c.Skipped++
+		}
+	}
+	return c, unfinished
 }
 
 type testRun struct {
@@ -397,7 +419,7 @@ func (s *Stack) finishStep(w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusUnprocessableEntity, proto.ReasonFailureMissing,
 			"A failing step result was measured as carrying no failure text, so it was refused. NEXT — send the failure text with a fail or error result.", nil)
 	default:
-		st.finished = true
+		st.finished, st.result = true, req.Result
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -472,6 +494,15 @@ func (s *Stack) closeTestRun(w http.ResponseWriter, r *http.Request) {
 	}
 	var req proto.CloseRequest
 	if !decode(w, r, &req) {
+		return
+	}
+	// Ruling 1 of v1.1: the core is the record, so it re-tallies the accepted results and refuses
+	// a verdict or counts that disagree. The test run stays open, so the adapter can still close.
+	tally, unfinished := tr.tally()
+	if unfinished > 0 || req.Counts != tally || req.Verdict != proto.VerdictOf(tally) {
+		refuse(w, http.StatusUnprocessableEntity, proto.ReasonResultMismatch,
+			fmt.Sprintf("The close carried verdict %q and counts %+v, while the core's tally of the results it accepted is verdict %q and counts %+v with %d started steps still lacking a result, so the close was refused. NEXT — close again with the core's tally once every started step has an accepted result; the test run is still open.",
+				req.Verdict, req.Counts, proto.VerdictOf(tally), tally, unfinished), nil)
 		return
 	}
 	s.emitMock("scope.closed")

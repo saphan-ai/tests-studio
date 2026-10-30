@@ -16,7 +16,7 @@ import (
 	"github.com/saphan-ai/tests-studio/conformance/internal/stubs"
 )
 
-const sampleItems = 3
+const sampleItems = 4
 
 // inProcess runs the sample adapter in this process over the in-memory transport, so a whole
 // conformance run needs no socket. Args[0] is the command name and is ignored.
@@ -71,8 +71,8 @@ func TestSampleAdapterPassesEveryCheck(t *testing.T) {
 			if rep.Exit != harness.ExitPass || len(failedIDs(rep)) != 0 {
 				t.Fatalf("exit %d, failed checks %v\n%s", rep.Exit, failedIDs(rep), strings.Join(rep.Lines, "\n"))
 			}
-			if got := len(rep.Results); got != 13 {
-				t.Fatalf("%d checks ran; the specification lists 13", got)
+			if got := len(rep.Results); got != 15 {
+				t.Fatalf("%d checks ran; the specification lists 15", got)
 			}
 			for _, l := range rep.Lines {
 				if !strings.HasPrefix(l, "PASS ") && !strings.HasPrefix(l, "SUMMARY ") && !strings.HasPrefix(l, "remark: ") {
@@ -98,6 +98,17 @@ var mutantCases = []struct {
 	{sampleadapter.MutantCredentialSummary, stubs.ModeStandalone, harness.ExitFail, checks.IDCredentialLeak},
 	{sampleadapter.MutantMockControlDirect, stubs.ModeStandalone, harness.ExitFail, checks.IDMockControl},
 	{sampleadapter.MutantSecondRunInLeg, stubs.ModeLeg, harness.ExitFail, checks.IDNoSecondRun},
+	// v1.1: one mutant per ruling the suite can observe.
+	{sampleadapter.MutantCountsMismatch, stubs.ModeStandalone, harness.ExitFail, checks.IDRunResultCounts}, // ruling 1
+	{sampleadapter.MutantDuplicateStepID, stubs.ModeStandalone, harness.ExitFail, checks.IDStepPerItem},    // ruling 3
+	{sampleadapter.MutantRetryNewStep, stubs.ModeStandalone, harness.ExitFail, checks.IDStepPerItem},       // ruling 4
+	{sampleadapter.MutantNeverRanNoStep, stubs.ModeStandalone, harness.ExitFail, checks.IDStepPerItem},     // ruling 5
+	{sampleadapter.MutantEvidenceUnknown, stubs.ModeStandalone, harness.ExitFail, checks.IDEvidenceDigest}, // ruling 6
+	{sampleadapter.MutantRunClosedLate, stubs.ModeStandalone, harness.ExitFail, checks.IDEventsValid},      // ruling 7
+	{sampleadapter.MutantConcurrentAttach, stubs.ModeLeg, harness.ExitFail, checks.IDNoSecondRun},          // ruling 12
+	{sampleadapter.MutantSampleNoSkip, stubs.ModeStandalone, harness.ExitFail, checks.IDComposition},       // ruling 14
+	{sampleadapter.MutantRetryRefused, stubs.ModeLeg, harness.ExitFail, checks.IDRefusalRetried},           // ruling 15
+	{sampleadapter.MutantEventIDReused, stubs.ModeStandalone, harness.ExitFail, checks.IDEventsValid},      // ruling 16
 }
 
 // TestMutantFailsExactlyItsCheck is the negative control of the checks: each mutant breaks one
@@ -112,6 +123,45 @@ func TestMutantFailsExactlyItsCheck(t *testing.T) {
 				t.Fatalf("want exit %d and only %s red; got exit %d, red %v\n%s", c.exit, c.failed, rep.Exit, got, strings.Join(rep.Lines, "\n"))
 			}
 		})
+	}
+}
+
+// differingMocksURL is a launcher that hands the adapter a MOCKS_CORE_URL different from the one
+// the core's attach answer names.
+type differingMocksURL struct{ inProcess }
+
+func (l differingMocksURL) Launch(ctx context.Context, ln harness.Launch) (harness.Output, error) {
+	for i, kv := range ln.Env {
+		if strings.HasPrefix(kv, "MOCKS_CORE_URL=") {
+			ln.Env[i] = "MOCKS_CORE_URL=http://another-mocks-core.example.test"
+		}
+	}
+	return l.inProcess.Launch(ctx, ln)
+}
+
+// TestAdapterRefusesByNameWhenMocksCoreURLsDiffer pins ruling 9 of v1.1: the sample adapter stops
+// with mocks-core-mismatch instead of choosing between two Mocks Studio cores.
+func TestAdapterRefusesByNameWhenMocksCoreURLsDiffer(t *testing.T) {
+	t.Parallel()
+	dir, err := schemas.FindSpecDir("", ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := &harness.MemoryHosts{}
+	rep, err := harness.Run(context.Background(), harness.Config{
+		Command: []string{"sample-adapter", "--project", projectFile()}, Mode: stubs.ModeLeg, Items: sampleItems, SpecDir: dir,
+		Hosts: hosts, Launcher: differingMocksURL{inProcess{rt: hosts.RoundTripper()}}, WorkDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Input.Stderr == "" || !strings.Contains(rep.Input.Stderr, "mocks-core-mismatch") {
+		t.Fatalf("the adapter's standard error does not name mocks-core-mismatch: %q", rep.Input.Stderr)
+	}
+	for _, c := range rep.Calls {
+		if strings.Contains(c.Path, "/steps") {
+			t.Fatalf("the adapter went on to start a step (call %d) after the mismatch", c.Seq)
+		}
 	}
 }
 
@@ -258,7 +308,45 @@ func TestChecksReadTheRecording(t *testing.T) {
 			c.Body = append([]byte("x"), c.Body...)
 		}},
 		{"counts that do not equal the steps", checks.IDRunResultCounts, func(in *checks.Input) {
-			in.ResultRaw = bytes.Replace(in.ResultRaw, []byte(`"total": 3`), []byte(`"total": 4`), 1)
+			in.ResultRaw = bytes.Replace(in.ResultRaw, []byte(`"total": 4`), []byte(`"total": 5`), 1)
+		}},
+		{"a close the core refused as run-result-mismatch", checks.IDRunResultCounts, func(in *checks.Input) {
+			c := firstCall(in, path("/close"))
+			accepted := *c // the adapter's later, corrected close is the accepted one
+			accepted.Seq, accepted.Body = 997, append(append([]byte(nil), c.Body...), ' ')
+			c.Status = http.StatusUnprocessableEntity
+			c.Response = []byte(`{"message":"The close carried counts the core's tally contradicts.","reason_code":"run-result-mismatch"}`)
+			in.Calls = append(in.Calls, accepted)
+		}},
+		{"a skipped test turned into a pass", checks.IDComposition, func(in *checks.Input) {
+			editBody(firstCall(in, finishWith("skip")), func(m map[string]any) { m["result"] = "pass" })
+			// the run result follows, so only the composition is varied
+			in.ResultRaw = bytes.Replace(bytes.Replace(in.ResultRaw, []byte(`"passed": 1`), []byte(`"passed": 2`), 1), []byte(`"skipped": 1`), []byte(`"skipped": 0`), 1)
+		}},
+		{"a refused call sent again unchanged", checks.IDRefusalRetried, func(in *checks.Input) {
+			c := *firstCall(in, func(c stubs.Call) bool { return c.Service == stubs.ServiceMocks })
+			c.Status, c.Seq = http.StatusUnprocessableEntity, 990
+			c.Response = []byte(`{"message":"refused","reason_code":"request-invalid"}`)
+			again := c
+			again.Seq = 991
+			in.Calls = append(in.Calls, c, again)
+		}},
+		{"the same event_id on two different events", checks.IDEventsValid, func(in *checks.Input) {
+			first := firstCall(in, eventOfKind("run.opened"))
+			var id string
+			var m map[string]any
+			if err := json.Unmarshal(first.Body, &m); err != nil {
+				t.Fatal(err)
+			}
+			id, _ = m["event_id"].(string)
+			editBody(firstCall(in, eventOfKind("step.started")), func(m map[string]any) { m["event_id"] = id })
+		}},
+		{"a step result with no step_id, even when a right one follows", checks.IDStepPerItem, func(in *checks.Input) {
+			c := *firstCall(in, path("/step-results"))
+			c.Seq, c.Status = 989, http.StatusUnprocessableEntity
+			c.Response = []byte(`{"message":"refused","reason_code":"step-id-missing"}`)
+			c.Body = []byte(`{"result":"pass","duration_ms":1}`)
+			in.Calls = append(in.Calls, c)
 		}},
 		{"the evidence line is not on standard output", checks.IDRunResultSchema, func(in *checks.Input) { in.Stdout = "" }},
 		{"a credential on standard error", checks.IDCredentialLeak, func(in *checks.Input) {

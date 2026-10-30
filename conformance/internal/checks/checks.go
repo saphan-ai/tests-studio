@@ -3,6 +3,7 @@
 package checks
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,6 +29,8 @@ const (
 	IDCredentialSent  = "credential-presented"
 	IDCredentialLeak  = "credential-not-leaked"
 	IDMockControl     = "mock-control-bypass"
+	IDComposition     = "sample-composition"
+	IDRefusalRetried  = "refusal-not-retried"
 )
 
 // Input is everything the checks read.
@@ -74,6 +77,7 @@ func All(in Input) []Result {
 		specVersion(in, f), runOpened(in, f), noSecondRun(in, f), stepPerItem(in, f), stepResult(in, f),
 		traceparent(in, f), evidenceDigest(in, f), eventsValid(in, f), runResultSchema(in, f),
 		runResultCounts(in, f), credentialSent(in, f), credentialLeak(in, f), mockControl(in, f),
+		sampleComposition(in, f), refusalNotRetried(in, f),
 	}
 }
 
@@ -229,11 +233,24 @@ func noSecondRun(in Input, _ facts) Result {
 	mocksOpens := count(in, func(c stubs.Call) bool {
 		return c.Service == stubs.ServiceMocks && c.Method == "POST" && c.Path == "/v1/runs"
 	})
+	concurrent := 0 // seq of the first attach made while a test run was still attached
+	attached := false
+	for _, c := range in.Calls {
+		switch {
+		case isAttach(c):
+			if attached && concurrent == 0 {
+				concurrent = c.Seq
+			}
+			attached = attached || c.Status == http.StatusCreated
+		case isClose(c) && c.Status == http.StatusOK:
+			attached = false // the test run closed: the leg's run may take a new attach (ecosystem contract section 1)
+		}
+	}
 	switch {
 	case in.Mode == stubs.ModeLeg && (opens > 0 || mocksOpens > 0):
 		return fail(IDNoSecondRun, "leg mode: %d openTestRun and %d openRun calls were made inside the leg's run; the adapter must attach and open nothing", opens, mocksOpens)
-	case in.Mode == stubs.ModeLeg && attaches > 1:
-		return fail(IDNoSecondRun, "leg mode: %d attach calls; one test run is attached at a time", attaches)
+	case in.Mode == stubs.ModeLeg && concurrent > 0:
+		return fail(IDNoSecondRun, "leg mode: call %d attached while a test run was attached; one test run is attached at a time (a new attach after the close is allowed)", concurrent)
 	case in.Mode == stubs.ModeStandalone && (opens > 1 || mocksOpens > 0 || attaches > 0):
 		return fail(IDNoSecondRun, "standalone mode: %d openTestRun, %d attach and %d openRun-on-Mocks calls; exactly one open and nothing else is allowed", opens, attaches, mocksOpens)
 	}
@@ -243,6 +260,12 @@ func noSecondRun(in Input, _ facts) Result {
 func stepPerItem(in Input, f facts) Result {
 	seen := map[string]int{}
 	for _, c := range in.Calls {
+		if isFinish(c) {
+			var r proto.StepResult
+			if json.Unmarshal(c.Body, &r) != nil || r.StepID == nil || *r.StepID == "" {
+				return fail(IDStepPerItem, "call %d sent a step result with no step_id; a result names the step it finishes", c.Seq)
+			}
+		}
 		if !isStart(c) {
 			continue
 		}
@@ -364,6 +387,7 @@ var stepEventKinds = map[string]bool{"step.started": true, "step.finished": true
 func eventsValid(in Input, f facts) Result {
 	n := 0 // every emitted event; the kinds map below holds only the accepted ones
 	kinds := map[string]bool{}
+	byID := map[string][]byte{} // event_id -> the body first sent under it (ruling 16: one id, one event)
 	for _, c := range in.Calls {
 		if !isEvent(c) {
 			continue
@@ -375,6 +399,7 @@ func eventsValid(in Input, f facts) Result {
 			TestRunID     string `json:"test_run_id"`
 			StepID        string `json:"step_id"`
 			CorrelationID string `json:"correlation_id"`
+			EventID       string `json:"event_id"`
 		}
 		_ = json.Unmarshal(c.Body, &head) // a body that is not JSON fails validation just below
 		if c.Status == http.StatusAccepted {
@@ -383,6 +408,10 @@ func eventsValid(in Input, f facts) Result {
 		if err := in.Validator.ValidateEvent(c.Body); err != nil {
 			return fail(IDEventsValid, "event in call %d (kind %q) is not a valid tests.event/v1: %s", c.Seq, head.Kind, firstLine(err.Error()))
 		}
+		if prev, seen := byID[head.EventID]; seen && !bytes.Equal(prev, c.Body) {
+			return fail(IDEventsValid, "event in call %d (kind %q) reuses event_id %q for a different event; an event_id names one event within the test run (re-sending the same document is allowed)", c.Seq, head.Kind, head.EventID)
+		}
+		byID[head.EventID] = c.Body
 		if f.opened != nil && (head.RunID != f.opened.RunID || head.TestRunID != f.opened.TestRunID) {
 			return fail(IDEventsValid, "event in call %d names run %q / test run %q, not this run's %q / %q", c.Seq, head.RunID, head.TestRunID, f.opened.RunID, f.opened.TestRunID)
 		}
@@ -446,13 +475,19 @@ func hasLine(out, line string) bool {
 }
 
 func runResultCounts(in Input, f facts) Result {
+	for _, c := range in.Calls {
+		var ref proto.Refusal
+		if isClose(c) && c.Status == http.StatusUnprocessableEntity && json.Unmarshal(c.Response, &ref) == nil && ref.ReasonCode == proto.ReasonResultMismatch {
+			return fail(IDRunResultCounts, "call %d closed the test run with a verdict or counts the core's own tally of the accepted results contradicts, and the core refused it: %s", c.Seq, firstLine(ref.Message))
+		}
+	}
 	var r proto.RunResult
 	if in.ResultRaw == nil || json.Unmarshal(in.ResultRaw, &r) != nil {
 		return fail(IDRunResultCounts, "there is no readable run result, so its counts could not be compared with the steps")
 	}
 	tally := proto.Counts{}
 	for _, c := range in.Calls {
-		if !isFinish(c) {
+		if !isFinish(c) || c.Status != http.StatusNoContent { // a refused result is not counted (ruling 1)
 			continue
 		}
 		var s proto.StepResult
@@ -544,6 +579,54 @@ func credentialLeak(in Input, f facts) Result {
 		}
 	}
 	return ok(IDCredentialLeak, "none of %d credentials appears in any event, summary, the run result or the adapter's output", len(f.secrets))
+}
+
+// sampleComposition measures, from the results the core accepted and the requests the stand-in
+// system received, that the sample project holds what section 12 requires of it (ruling 14).
+func sampleComposition(in Input, _ facts) Result {
+	seen := map[string]int{}
+	for _, c := range in.Calls {
+		if !isFinish(c) || c.Status != http.StatusNoContent {
+			continue
+		}
+		var r proto.StepResult
+		if json.Unmarshal(c.Body, &r) == nil {
+			seen[r.Result]++
+		}
+	}
+	sut := count(in, func(c stubs.Call) bool { return c.Service == stubs.ServiceWorld && strings.HasPrefix(c.Path, "/sut/") })
+	for _, want := range []string{"pass", "fail", "skip"} {
+		if seen[want] == 0 {
+			return fail(IDComposition, "no accepted step result is %q; the sample project must hold a passing, a failing and a skipped test (accepted results: %v)", want, seen)
+		}
+	}
+	if sut == 0 {
+		return fail(IDComposition, "the stand-in system under test received no request; at least one test of the sample project must call it")
+	}
+	return ok(IDComposition, "the accepted results hold %d pass, %d fail, %d skip, and %d requests reached the stand-in system", seen["pass"], seen["fail"], seen["skip"], sut)
+}
+
+// refusalNotRetried measures ruling 15: a refused call (a 4xx with a Refusal document) is a
+// decision, so the same request is never sent again. A changed request is a new call.
+func refusalNotRetried(in Input, _ facts) Result {
+	type key struct{ service, method, path, body string }
+	refused := map[key]int{} // the request -> the seq of the call that was refused
+	n := 0
+	for _, c := range in.Calls {
+		if c.Service == stubs.ServiceWorld {
+			continue
+		}
+		k := key{string(c.Service), c.Method, c.Path, string(c.Body)}
+		if first, again := refused[k]; again {
+			return fail(IDRefusalRetried, "call %d (%s %s) repeats call %d, which was refused; a refusal is a decision and is never retried unchanged", c.Seq, c.Method, redactPath(c.Path), first)
+		}
+		var ref proto.Refusal
+		if c.Status >= 400 && c.Status < 500 && json.Unmarshal(c.Response, &ref) == nil && ref.ReasonCode != "" {
+			refused[k] = c.Seq
+			n++
+		}
+	}
+	return ok(IDRefusalRetried, "%d calls were refused by name and none was sent again unchanged", n)
 }
 
 func mockControl(in Input, _ facts) Result {
