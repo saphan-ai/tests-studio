@@ -47,7 +47,7 @@ under test; a correlation id never belongs to two steps.
 
 An `event_id` is unique **within its test run**: it names one event, and the events of a test run
 form a **set** keyed by it, as the `events_digest` of section 7 already treats them. Sending the
-same document under the same `event_id` again is the same event; sending a different event under
+same document under the same `event_id` again is the same event (equal as JSON values); sending a different event under
 an `event_id` already used is a defect (ruling 16).
 
 ## 3. Versions
@@ -93,7 +93,7 @@ places: `MOCKS_CORE_URL` and the `mocks_core_url` of the attach answer. Both nam
 service. When they differ the adapter does not choose: it stops and refuses by the name
 `mocks-core-mismatch`, saying both values. (This is an adapter-side refusal, not a core reason
 code; section 10 lists it apart.) Standalone, the open answer's `mocks_core_url` is the only
-source.
+source. An adapter that refuses by name for `mocks-core-mismatch` stops before any test run exists, so it attempts no `closeTestRun`: there is nothing to close (section 10.1).
 
 ## 5. The credential
 
@@ -185,6 +185,8 @@ Videos and traces are complete only after the test ends, so an adapter MAY attac
 **Evidence is mandatory (ruling 14).** A conforming run attaches at least one evidence item
 (a log is enough). An adapter that has nothing else to attach attaches the log of the run.
 
+**Evidence precedes the close.** Closing revokes the test-run credential (section 5), so evidence must still precede `closeTestRun`: `evidence-digest` fails on an evidence call recorded after the accepted `closeTestRun` of its test run, naming the order (section 6.2).
+
 ## 7. The run result
 
 `closeTestRun` answers a `tests.run-result/v1` document
@@ -207,7 +209,7 @@ Fields: `run_id`, `test_run_id`, `project`, `verdict` (`pass`, `fail`, `error`),
   counted. The core compares the adapter's `verdict` and `counts` with its tally and refuses a close
   that differs, **`422 run-result-mismatch`**, naming its own tally in the message; it does the same
   while a started step still has no accepted result. A refused close leaves the test run open and
-  its credential live, so the adapter can close again with the right tally. The adapter therefore
+  its credential live, so the adapter can close again with the right tally. `run-result-counts` fails a run whose close was refused (`422 run-result-mismatch`), even when a correct re-close follows: the refusal stays in the recording. The adapter therefore
   counts what the core accepted, not what it meant to send. Only a close the core accepted yields a
   run result.
 - **`events_digest` is copied (ruling 2).** SHA-256 over the event ids of the Mocks Studio core's
@@ -336,9 +338,7 @@ send the same request again, and it reports the refusal (its message names the n
 **transport failure** (no answer, a reset connection, a `5xx`) is not a decision and MAY be retried,
 with backoff bounded by a documented setting of the adapter (a count and a total time); an adapter
 that retries says its bound in its documentation. A request changed to follow a refusal's advice is a
-new call, not a retry. `closeTestRun` is **always attempted**, whatever else was refused, so that
-the credential is revoked and the run result exists. The check `refusal-not-retried` measures this
-from the recording.
+new call, not a retry. `closeTestRun` is always attempted once a test run was opened or attached: whatever else was refused, the close is attempted so the credential is revoked and the run result exists. A refusal before a test run exists — `mocks-core-mismatch`, a refused open, or a refused attach — leaves nothing to close. The check `refusal-not-retried` measures this from the recording.
 
 ## 11. Schemas and the ecosystem contract
 
@@ -505,7 +505,11 @@ from version 1. The wire protocol is unchanged (`v1`); the only new reason code 
 | 13 | `announceCorrelation` is optional, for protocols that cannot carry the headers | 8 |
 | 14 | at least one evidence item per conforming run; the suite checks the sample project's composition (`sample-composition`) | 6.2, 12 |
 | 15 | a refusal is never retried; a transport failure MAY be, with a documented bound; `closeTestRun` is always attempted (`refusal-not-retried`) | 10.1, 12 |
-| 16 | `event_id` is unique per test run with set semantics | 2, 12 |
+| 16 | `event_id` is unique per test run with set semantics (equal as JSON values) | 2, 12 |
+| (review 2) | `events-valid` compares event bodies as JSON values: one `event_id` names one event within the test run, and the same document re-serialized with different bytes is still the same event | 2 |
+| (review 3) | `run-result-counts` fails a run whose close was refused, even after a correct re-close | 7 |
+| (review 3) | `evidence-digest` fails on an evidence call recorded after the accepted `closeTestRun` of its test run, naming the order | 6.2 |
+| (review 3) | `closeTestRun` is attempted once a test run was opened or attached; a refusal before that (`mocks-core-mismatch`, a refused open or attach) leaves nothing to close | 4, 10.1 |
 
 Also stated: event order beyond `run.closed` before `closeTestRun` stays unspecified (section 9.2), and
 the OpenAPI `SpecVersion` pattern `^v[0-9]+$` is unchanged.
