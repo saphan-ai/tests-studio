@@ -11,14 +11,14 @@ This page says what the suite treats as untrusted, what it protects, how, what h
 | the adapter's process | it is a program you or someone else wrote; it runs with your user's rights and can do anything that user can do |
 | the adapter's output (standard output, standard error, the run result file) | it is whatever the adapter chose to print; it may be enormous, malformed, or carry a credential |
 | the sample project | it is code the adapter's test framework runs; the suite does not read it, but it runs under the adapter |
-| the stand-in servers' recordings | each recording is built from what the adapter sent; every body is parsed and validated against the published schemas before a check trusts it |
+| the stand-in servers' recordings | each recording is built from what the adapter sent; events and the run result are validated against the published schemas, and every other body is decoded and checked field by field, before a check trusts it |
 | the command line you give the suite | it names the program to run; the suite starts exactly that and nothing else |
 
 ## What it protects
 
-- **Your secrets.** The adapter does not inherit your environment. A host secret in a variable such as a cloud token or an API key cannot reach the adapter or its output.
-- **Your machine.** An adapter that never stops, or that leaves a child holding the output open, cannot keep the suite or its processes running past the timeout.
-- **The honesty of the result.** A measurement that was skipped, or that had nothing to measure, is never a pass.
+- **Your secrets.** The adapter does not inherit your environment: the suite does not hand it a host secret held in a variable such as a cloud token or an API key. The adapter still runs with your user's rights and can read what you can read (see "Running untrusted adapters" below).
+- **Your machine.** An adapter that never stops, or that leaves a child holding the output open, cannot keep the suite running past the timeout, and on Unix its process group is killed at the timeout. A process the adapter started that outlives an adapter which exits on time, or that leaves the group (`setsid`), is not killed (see "What is still being checked").
+- **The honesty of the result.** A check that must observe something fails when it observed nothing. Two exceptions, both stated below: the four checks that forbid an act ("must not") pass when the act was never seen, and a socket test skipped where loopback is denied lets `go test` exit 0 unless `TESTS_CONFORMANCE_REQUIRE_SOCKETS=1` is set.
 
 ## How
 
@@ -28,7 +28,7 @@ The adapter receives the variables the specification lists for it (the core's ad
 
 ### The credential does not leak
 
-The suite hands the adapter a credential, then checks that it appears in no event, no run result and nothing the adapter printed (`credential-not-leaked`). The specification forbids an adapter to log it or put it on a command line.
+The suite hands the adapter a credential, then checks that it appears in no event, no run result and not in the first 1 MiB of what the adapter printed on standard output and standard error (`credential-not-leaked`). Evidence bodies are not searched. The specification forbids an adapter to log it or put it on a command line.
 
 ### The run is bounded
 
@@ -57,6 +57,8 @@ Each was found before the first release.
 - **Running untrusted adapters.** The suite does not sandbox the adapter: it runs with your rights, in your working directory. If you run an adapter you did not write, run the suite in a container or a throwaway account. A sandbox is not planned in version 1.
 - **Other users on the same machine.** The stand-in servers listen on loopback, which any local user can reach. The suite is not designed to defend against a hostile local user during a run.
 - **Sizes and rates.** The adapter's output is capped at 1 MiB per stream and each request body the stand-in servers read or record at 8 MiB. The number of calls they record is not capped, so the suite's memory use under an adapter that makes calls without end is bounded only by the timeout.
+- **Processes that outlive the adapter.** The process group is killed only when the timeout fires; a descendant of an adapter that exits before the timeout, or one that leaves the group with `setsid`, keeps running after the suite ends.
+- **The wait delay is not pinned by a test.** Removing the bound on how long the suite waits for a descendant holding the output passes the suite's own tests today; a test that fails without it is owed.
 
 ## Reporting a vulnerability
 
