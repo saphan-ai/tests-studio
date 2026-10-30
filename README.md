@@ -27,37 +27,39 @@ The specification in [`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md) says exa
 
 ## See a real example
 
-The suite ships with a tiny adapter of its own, `sample-adapter`, that reads a three-test sample project (one test passes, one fails, one is skipped). Build both, then run the suite against it, in both modes:
+The suite ships with a tiny adapter of its own, `sample-adapter`, that reads a four-item sample project (one test passes, one fails, one is skipped, and one never runs its body). Build both, then run the suite against it, in both modes:
 
 ```sh
 go -C conformance build -o ../bin/tests-conformance ./cmd/tests-conformance
 go -C conformance build -o ../bin/sample-adapter ./cmd/sample-adapter
-./bin/tests-conformance --items 3 --mode standalone -- ./bin/sample-adapter --project conformance/testdata/sample-project/tests.json  # needs: listener
-./bin/tests-conformance --items 3 --mode leg -- ./bin/sample-adapter --project conformance/testdata/sample-project/tests.json  # needs: listener
+./bin/tests-conformance --items 4 --mode standalone -- ./bin/sample-adapter --project conformance/testdata/sample-project/tests.json  # needs: listener
+./bin/tests-conformance --items 4 --mode leg -- ./bin/sample-adapter --project conformance/testdata/sample-project/tests.json  # needs: listener
 ```
 
 You need Go 1.26 or newer. The suite starts two stand-in servers on your own machine's loopback address, so it needs permission to listen there.
 
 What you should see is one line per check, ending in exit code 0:
 
-Measured on 2026-10-30 on an Apple-silicon macOS machine, the first command, unedited (the leg-mode run printed
-the same thirteen `PASS` lines for leg mode):
+Measured on 2026-10-30 on an Apple-silicon macOS machine against specification v1.1, the first command,
+unedited (the leg-mode run printed the same fifteen `PASS` lines for leg mode):
 
 ```text
 PASS spec-version-known — asked GET /v1/spec (call 1), then declared "v1", which the core serves (v1)
-PASS run-opened — standalone mode: opened test run tr-a7182781 on run conf-run-e959ab
+PASS run-opened — standalone mode: opened test run tr-9ee52519 on run conf-run-9d9ae5
 PASS no-second-run — standalone mode: 1 open, 0 attach and 0 openRun-on-Mocks calls
-PASS step-per-item — 3 test items became 3 steps with unique step_ids, each with exactly one result
-PASS step-result-valid — 3 step results, each one of pass, fail, error, skip with a duration and, where failing, failure text
+PASS step-per-item — 4 test items became 4 steps with unique step_ids, each with exactly one result
+PASS step-result-valid — 4 step results, each one of pass, fail, error, skip with a duration and, where failing, failure text
 PASS traceparent-to-sut — 2 requests reached the system under test, each with exactly the traceparent and baggage the core handed out
 PASS evidence-digest — 2 evidence uploads, each declaring the SHA-256 of its own bytes
-PASS events-valid — 10 events, each valid against tests.event/v1 and carrying this run's ids; kinds run.opened, step.started, step.finished, run.closed all seen
+PASS events-valid — 12 events, each valid against tests.event/v1 and carrying this run's ids; kinds run.opened, step.started, step.finished, run.closed all seen
 PASS run-result-schema — the run result validates against tests.run-result/v1, repeats the core's events_digest, and its evidence line is on standard output
-PASS run-result-counts — counts {Total:3 Passed:1 Failed:1 Errored:0 Skipped:1} equal the steps the core saw, and verdict "fail" follows from them
-PASS credential-presented — all 21 calls that need a credential presented the credential of their own run
+PASS run-result-counts — counts {Total:4 Passed:1 Failed:1 Errored:1 Skipped:1} equal the steps the core saw, and verdict "error" follows from them
+PASS credential-presented — all 25 calls that need a credential presented the credential of their own run
 PASS credential-not-leaked — none of 2 credentials appears in any event, summary, the run result or the adapter's output
-PASS mock-control-bypass — 25 calls observed, none to a mock's own URL; 2 went through the Mocks Studio core
-SUMMARY 13 checks, 13 passed, 0 failed (standalone mode)
+PASS mock-control-bypass — 29 calls observed, none to a mock's own URL; 2 went through the Mocks Studio core
+PASS sample-composition — the accepted results hold 1 pass, 1 fail, 1 skip, and 2 requests reached the stand-in system
+PASS refusal-not-retried — 0 calls were refused by name and none was sent again unchanged
+SUMMARY 15 checks, 15 passed, 0 failed (standalone mode)
 remark: this run measured one adapter run in standalone mode only; run it again in the other mode before claiming either
 remark: the stubs serve one request at a time, so the suite does not measure an adapter's behaviour under concurrent steps
 ```
@@ -79,8 +81,8 @@ The exit codes are 0 (every check passed), 1 (a check failed), 2 (the adapter de
 
 ```sh
 go -C conformance build -o ../bin/tests-conformance ./cmd/tests-conformance
-./bin/tests-conformance --items 3 --mode standalone -- <your adapter command> <its arguments>  # needs: adapter
-./bin/tests-conformance --items 3 --mode leg -- <your adapter command> <its arguments>  # needs: adapter
+./bin/tests-conformance --items 4 --mode standalone -- <your adapter command> <its arguments>  # needs: adapter
+./bin/tests-conformance --items 4 --mode leg -- <your adapter command> <its arguments>  # needs: adapter
 ```
 
 `--items` is the number of tests in your sample project. The adapter runs in a scrubbed environment: only the variables the specification lists reach it. If your framework needs another (`PYTHONPATH`, say), name it with `--pass-env PYTHONPATH`.
@@ -93,10 +95,10 @@ Reference adapters for Go's `testing`, pytest and Playwright are planned. None h
 
 Each number below is recomputed from its command by the documentation check on every run; if the specification changes and the number does not, that check goes red. Measured 2026-10-30 on the commit this page was written against.
 
-- **13** checks the suite runs against an adapter: `sed -n '/^\*\*Checks\*\*/,/^\*\*Mutants/p' spec/TEST_RUNNER_V1.md | grep -c '^| [^ a-z|][a-z0-9-]*[^ a-z|] |'`
-- **8** mutants of the sample adapter, each breaking one rule and failing exactly one check: `sed -n '/^\*\*Mutants/,/^## 13/p' spec/TEST_RUNNER_V1.md | grep -c '^| [^ a-z|][a-z0-9-]*[^ a-z|] |'`
-- **18** refusal reason codes the specification names for the core: `sed -n '/Reason codes of the Tests Studio core/,/^A call made/p' spec/TEST_RUNNER_V1.md | grep -o '[^ a-z|][a-z]*-[a-z-]*[^ a-z|]' | wc -l`
-- **3** tests in the sample project (pass, fail, skip): `grep -c '"outcome"' conformance/testdata/sample-project/tests.json`
+- **15** checks the suite runs against an adapter: `sed -n '/^\*\*Checks\*\*/,/^\*\*Mutants/p' spec/TEST_RUNNER_V1.md | grep -c '^| [^ a-z|][a-z0-9-]*[^ a-z|] |'`
+- **18** mutants of the sample adapter, each breaking one rule and failing exactly one check: `sed -n '/^\*\*Mutants/,/^## 13/p' spec/TEST_RUNNER_V1.md | grep -c '^| [^ a-z|][a-z0-9-]*[^ a-z|] |'`
+- **20** refusal reason codes the specification names for the core: `sed -n '/Reason codes of the Tests Studio core/,/^A call made/p' spec/TEST_RUNNER_V1.md | grep -o '[^ a-z|][a-z]*-[a-z-]*[^ a-z|]' | wc -l`
+- **4** tests in the sample project (pass, fail, skip, and one whose body never runs): `grep -c '"outcome"' conformance/testdata/sample-project/tests.json`
 
 What is not here, because it is not measured on this page: how fast the suite runs, and how many adapters pass it. The count of tests in the suite's own test run depends on whether the machine allows loopback, so it is not a fixed number and none is printed here.
 
@@ -130,7 +132,7 @@ conformance/                the Go module of the conformance suite
   cmd/tests-conformance/    the suite's command
   cmd/sample-adapter/       the fixture adapter every check passes against
   internal/                 the harness, the stand-in servers, the checks
-  testdata/sample-project/  the three-test sample project
+  testdata/sample-project/  the four-item sample project
 docscheck/                  the test that keeps these documents honest
 LICENSE, LICENSE-docs       the two licences
 ```

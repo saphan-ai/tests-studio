@@ -49,6 +49,7 @@ Each was found before the first release.
 - **A data race in the stand-in core.** `SetURLs` and `LegEnv` wrote and read shared state without the lock every handler holds. Under the race detector over real sockets this gave 16 reports and 3 failing socket tests on a fresh clone. Fixed in `d94c070`: both take the recorder's lock.
 - **A timeout that did not bound children.** The suite killed the adapter at the timeout but not what the adapter had started; a grandchild holding standard output kept the run alive past `--timeout`. Fixed in `bfec51c`: the adapter runs in its own process group, the group is killed, and a wait delay closes the pipes.
 - **Four false passes.** The suite said `PASS` where the rule was broken: a step result with no `duration_ms`; an event the core had refused still counted as emitted; a step event whose `correlation_id` was not the one the core issued; evidence attached to a step the core never started. Fixed in `84ffe36`, each with a recording that varies exactly that field and expects a `FAIL`.
+- **A check that failed conforming adapters.** `no-second-run` failed a leg that attached a second test run after closing the first, which the shared contract allows (sequential test runs in one leg). Fixed in spec v1.1: the check now counts only concurrent attaches (`15c4456`).
 
 ## What is still being checked
 
