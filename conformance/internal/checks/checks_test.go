@@ -72,6 +72,76 @@ func TestNoSecondRunCountsConcurrentAttachesOnly(t *testing.T) {
 	}
 }
 
+// TestResultHasThreeStates pins ruling 4: not applicable is neither a pass nor a failure, and the
+// line says so; a plain pass and a plain failure keep the v1.1 line.
+func TestResultHasThreeStates(t *testing.T) {
+	t.Parallel()
+	pass, bad, na := ok("x", "fine"), fail("x", "broken"), notApplicable("x", "because")
+	cases := []struct {
+		r      Result
+		failed bool
+		line   string
+	}{
+		{pass, false, "PASS x — fine"},
+		{bad, true, "FAIL x — broken"},
+		{na, false, "NOT APPLICABLE x — because"},
+	}
+	for _, c := range cases {
+		if c.r.Failed() != c.failed || c.r.Line() != c.line {
+			t.Errorf("%+v: Failed()=%v, line %q; want %v and %q", c.r, c.r.Failed(), c.r.Line(), c.failed, c.line)
+		}
+	}
+	if na.Pass {
+		t.Error("a not-applicable result reads as a pass to a caller that only looks at Pass")
+	}
+}
+
+// TestImportProfileAnswersNotApplicableNeverPass pins ruling 3 at the check: the two checks that
+// need a test to have carried a traceparent answer NOT APPLICABLE with the reason even when the
+// recording holds no request at the system under test, a live judgement of the same recording
+// still FAILS them, and the half of sample-composition about the results stays measured.
+func TestImportProfileAnswersNotApplicableNeverPass(t *testing.T) {
+	t.Parallel()
+	results := []stubs.Call{
+		{Seq: 1, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/step-results", Header: http.Header{}, Status: http.StatusNoContent, Body: []byte(`{"step_id":"s1","result":"pass","duration_ms":1}`)},
+		{Seq: 2, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/step-results", Header: http.Header{}, Status: http.StatusNoContent, Body: []byte(`{"step_id":"s2","result":"fail","duration_ms":1,"failure":"boom"}`)},
+		{Seq: 3, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/step-results", Header: http.Header{}, Status: http.StatusNoContent, Body: []byte(`{"step_id":"s3","result":"skip","duration_ms":1}`)},
+	}
+	imp := Input{Calls: results, Profile: ProfileImport}
+	for _, got := range []Result{traceparent(imp, derive(imp)), sampleComposition(imp, derive(imp))} {
+		if !got.NotApplicable || got.Pass || !strings.Contains(got.Measured, "the import profile reports after the run, so no test could carry a traceparent") {
+			t.Errorf("import: want NOT APPLICABLE with the reason; got %s", got.Line())
+		}
+	}
+	live := Input{Calls: results}
+	if got := traceparent(live, derive(live)); !got.Failed() {
+		t.Errorf("live: want FAIL with no request at the system under test; got %s", got.Line())
+	}
+	if got := sampleComposition(live, derive(live)); !got.Failed() {
+		t.Errorf("live: want FAIL with no request at the stand-in system; got %s", got.Line())
+	}
+	// The half about the results is still measured: no skipped result fails even under import.
+	noSkip := Input{Calls: results[:2], Profile: ProfileImport}
+	if got := sampleComposition(noSkip, derive(noSkip)); !got.Failed() || !strings.Contains(got.Measured, `"skip"`) {
+		t.Errorf("import, no skip: want FAIL naming skip; got %s", got.Line())
+	}
+}
+
+// TestImportProfileDoesNotForbidACorrelatedRequest pins ruling 6: a request at /sut/ under the
+// import profile, correlated or not, is not an offence; the checks answer NOT APPLICABLE.
+func TestImportProfileDoesNotForbidACorrelatedRequest(t *testing.T) {
+	t.Parallel()
+	in := Input{Profile: ProfileImport, Calls: []stubs.Call{
+		{Seq: 1, Service: stubs.ServiceCore, Method: "POST", Path: "/v1/test-runs/tr-1/steps", Header: http.Header{}, Status: http.StatusCreated,
+			Body: []byte(`{"step_id":"s1","name":"one"}`), Response: []byte(`{"step_id":"s1","correlation_id":"0123456789abcdef0123456789abcdef","traceparent":"00-0123456789abcdef0123456789abcdef-0011223344556677-01","baggage":"mocks.run=run-1,mocks.step=s1"}`)},
+		{Seq: 2, Service: stubs.ServiceWorld, Method: "GET", Path: "/sut/ping", Status: http.StatusOK, Header: http.Header{
+			"Traceparent": {"00-0123456789abcdef0123456789abcdef-0011223344556677-01"}, "Baggage": {"mocks.run=run-1,mocks.step=s1"}}},
+	}}
+	if got := traceparent(in, derive(in)); !got.NotApplicable {
+		t.Fatalf("want NOT APPLICABLE; got %s", got.Line())
+	}
+}
+
 // TestEventsValidSameDocumentDifferentBytes reproduces review condition 2: the same event
 // document re-sent under one event_id with its keys in another order is the same event and must
 // pass events-valid. At a2dd7d7 eventsValid compares raw bytes, so it FAILS (a conforming adapter

@@ -19,6 +19,7 @@ func TestRunnerExitsWithUsageCodeWhenTheSuiteCannotRun(t *testing.T) {
 		{"an unknown flag", []string{"--no-such-flag"}},
 		{"no adapter command", []string{"--items", "3"}},
 		{"an unknown mode", []string{"--items", "3", "--mode", "sideways", "--", "adapter"}},
+		{"an unknown profile", []string{"--items", "3", "--profile", "batch", "--", "adapter"}},
 		{"no --items", []string{"--", "adapter"}},
 		{"--items below one", []string{"--items", "0", "--", "adapter"}},
 		{"a spec directory that does not exist", []string{"--items", "3", "--spec-dir", filepath.Join(t.TempDir(), "absent"), "--", "adapter"}},

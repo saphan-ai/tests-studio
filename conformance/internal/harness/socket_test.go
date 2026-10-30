@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/saphan-ai/tests-studio/conformance/internal/checks"
 	"github.com/saphan-ai/tests-studio/conformance/internal/harness"
 	"github.com/saphan-ai/tests-studio/conformance/internal/schemas"
 	"github.com/saphan-ai/tests-studio/conformance/internal/stubs"
@@ -45,16 +46,26 @@ func buildSampleAdapter(t *testing.T) string {
 
 func runOverSockets(t *testing.T, bin string, mode stubs.Mode, mutant string) harness.Report {
 	t.Helper()
+	return runOverSocketsAs(t, bin, mode, "", "", mutant)
+}
+
+// runOverSocketsAs runs the adapter over loopback reporting as adapterProfile ("" is live) and
+// judged as judgedAs ("" is live).
+func runOverSocketsAs(t *testing.T, bin string, mode stubs.Mode, adapterProfile, judgedAs, mutant string) harness.Report {
+	t.Helper()
 	dir, err := schemas.FindSpecDir("", ".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd := []string{bin, "--project", projectFile()}
+	if adapterProfile != "" {
+		cmd = append(cmd, "--profile", adapterProfile)
+	}
 	if mutant != "" {
 		cmd = append(cmd, "--mutant", mutant)
 	}
 	rep, err := harness.Run(context.Background(), harness.Config{
-		Command: cmd, Mode: mode, Items: sampleItems, SpecDir: dir,
+		Command: cmd, Mode: mode, Profile: judgedAs, Items: sampleItems, SpecDir: dir,
 		Hosts: &harness.LoopbackHosts{}, Launcher: harness.ExecLauncher{}, WorkDir: t.TempDir(),
 	})
 	if err != nil {
@@ -71,6 +82,26 @@ func TestSocketSampleAdapterPassesEveryCheck(t *testing.T) {
 			rep := runOverSockets(t, bin, mode, "")
 			if rep.Exit != harness.ExitPass || len(failedIDs(rep)) != 0 {
 				t.Fatalf("exit %d, red %v\n%s", rep.Exit, failedIDs(rep), strings.Join(rep.Lines, "\n"))
+			}
+		})
+	}
+}
+
+// TestSocketImportProfileIsAcceptedOverLoopback is the import profile's measurement over real
+// sockets and a real executable: accepted in both modes with the two not-applicable checks named,
+// and the same adapter judged as live still fails them.
+func TestSocketImportProfileIsAcceptedOverLoopback(t *testing.T) {
+	needLoopback(t)
+	bin := buildSampleAdapter(t)
+	for _, mode := range []stubs.Mode{stubs.ModeStandalone, stubs.ModeLeg} {
+		t.Run(string(mode), func(t *testing.T) {
+			rep := runOverSocketsAs(t, bin, mode, checks.ProfileImport, checks.ProfileImport, "")
+			if rep.Exit != harness.ExitPass || len(failedIDs(rep)) != 0 || !contains(rep.Lines, importSummary) {
+				t.Fatalf("exit %d, red %v\n%s", rep.Exit, failedIDs(rep), strings.Join(rep.Lines, "\n"))
+			}
+			live := runOverSocketsAs(t, bin, mode, checks.ProfileImport, "", "")
+			if live.Exit != harness.ExitFail || len(failedIDs(live)) != 2 {
+				t.Fatalf("judged as live: exit %d, red %v; want the two checks red", live.Exit, failedIDs(live))
 			}
 		})
 	}
