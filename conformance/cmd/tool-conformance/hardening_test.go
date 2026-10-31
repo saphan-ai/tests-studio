@@ -206,6 +206,29 @@ func TestImagePinWithAssetSaysTheAssetWasIgnored(t *testing.T) {
 	}
 }
 
+// A record is exactly one document: whatever follows the first one is refused, well-formed or not. Each case
+// follows a valid record with bytes that are not a second valid document, so the only thing that can fail the
+// record is what the reader does with the second decode.
+func TestDataAfterTheRecordIsRefused(t *testing.T) {
+	b, err := json.Marshal(validRecord(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ name, file, tail string }{
+		{"a malformed second YAML document", "record.yaml", "\n---\nkey: [unclosed\n"},
+		{"a JSON record followed by trailing data", "record.json", " {}"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := runRecordFile(t, tc.file, append(append([]byte{}, b...), tc.tail...))
+			l := statusLine(out, "a")
+			if code != 1 || !strings.HasPrefix(l, "(a) FAIL:") || !strings.Contains(l, "exactly one document") {
+				t.Fatalf("exit %d, (a) line %q\n%s", code, l, out)
+			}
+		})
+	}
+}
+
 func TestMultiDocumentYAMLIsRefused(t *testing.T) {
 	doc := "schema: tool-invocation/v1\nid: one-tool\n---\nid: another-tool\n"
 	code, out := runRecordFile(t, "record.yaml", []byte(doc))

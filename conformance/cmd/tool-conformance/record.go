@@ -89,8 +89,11 @@ func loadDocument(path string) (any, error) {
 		return nil, fmt.Errorf("not valid YAML or JSON: %w", err)
 	}
 	var more yaml.Node
-	if err := docs.Decode(&more); err == nil {
+	switch err := docs.Decode(&more); {
+	case err == nil:
 		return nil, errors.New("the file holds more than one YAML document (a second one follows a '---'); a record is exactly one document")
+	case !errors.Is(err, io.EOF):
+		return nil, fmt.Errorf("data follows the first document and is not a second well-formed one (%w); a record is exactly one document", err)
 	}
 	v, err := nodeToAny(&n, "record")
 	if err != nil {
