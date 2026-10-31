@@ -10,5 +10,8 @@ protection do not mistake it for a leak. The rule in `.gitleaks.toml` matches on
 prefix `TSFIXTURE-SYNTHETIC-` followed by 16 lowercase hex digits. (This file does not spell the token out, so the
 rule matches one file, not two.)
 
-A tool run over this fixture without that config (default rules only) is expected to report nothing. That is part of
-what the fixture shows: the finding comes from the shipped rule, not from a provider pattern.
+What is known: the rule in `.gitleaks.toml` matches the token in `app.conf` once, and the token matches no provider's
+key format that its author knows of. What is not measured: whether a scanner's own default rules also report it.
+gitleaks' default `generic-api-key` rule looks at lines such as `api_token = ...` and may well match this one; nobody has
+run gitleaks over this fixture. Treat the expected outcome as "at least the finding from the shipped rule" until a
+record for that tool is admitted and measured.

@@ -27,7 +27,7 @@ shown correct on any other repository.
 
 A record is a YAML or JSON document: one mapping. A key that is not listed here is refused, and the refusal prints the
 allowed keys. A required key that is missing is refused, and the refusal names it. A key written twice in YAML is
-refused.
+refused, and so is a YAML file with a second document (after a `---`): a record is exactly one document.
 
 | key | required | meaning |
 |---|---|---|
@@ -99,7 +99,9 @@ pin: {asset: scanner, sha256: 9F2C}                   # refused: not 64 lowercas
 ```
 
 The public runner checks an `asset` pin when you pass `--asset <file>`: it hashes that file and compares. It cannot
-check an `image` pin, because it does not pull images, and it says so (`NOT APPLICABLE`) instead of passing it.
+check an `image` pin, because it does not pull images, and it says so (`NOT APPLICABLE`) instead of passing it. If
+`--asset` is passed together with an `image` pin, the file is not read and the `NOT APPLICABLE` line says the flag was
+given and ignored.
 
 remark: the runner hashes the file you name; it does not check that the first element of `command` resolves to that
 file. A matching hash proves you handed over the pinned bytes, not that those bytes are what ran.
@@ -144,12 +146,15 @@ command: [sh, -c, "scanner detect | tee report"]   # refused: command[2] contain
 command: [scanner, "--out={{home}}"]               # refused: command[1]: placeholder {{home}} names no input
 ```
 
-A value substituted for a placeholder is not scanned for metacharacters: it is a path or a declared value, and no
-shell reads it.
+A value substituted for a placeholder is scanned too, but before substitution, where it is written: every `params`
+value, of every type, is refused if it carries one of the same characters (see `params`), naming `params.<name>` and
+the character. The three built-in inputs hold paths the runner builds itself and are never scanned. Substitution
+itself changes nothing afterwards: the substituted element is one argument, and no shell reads it.
 
 ### `config`
 
-Optional. A relative path under the repository. Same path rule as `inputs`, without a glob.
+Optional. A relative path under the repository. Same path rule as `inputs`, without a glob (see "The path
+character class" below).
 
 ```yaml
 config: .gitleaks.toml          # valid
@@ -161,9 +166,15 @@ config: ../outside.toml         # refused: command and config paths may not clim
 ### `params`
 
 Optional. A mapping from an input name to `{type, value}`, where `type` is `string`, `int` or `relpath` and `value` is a
-string; any other `type` is refused, naming the param and listing `string, int, relpath`. A `relpath` value is a
-relative path that stays inside the repository (no `..` segment, no glob). A name matches `^[a-z][a-z0-9_]{0,31}$` and may not be `repo_root`, `output_path` or `config_path`. An `int`
-value must parse as an integer. A `string` value gets the same metacharacter refusal as `command`.
+string of at most 1024 characters; any other `type` is refused, naming the param and listing `string, int, relpath`.
+
+- A **name** matches `^[a-z0-9][a-z0-9_]{1,63}$` (lower-case letters, digits and underscores, 2 to 64 characters,
+  not starting with an underscore) and may not be `repo_root`, `output_path` or `config_path`.
+- **Every value, of every type, is refused if it carries one of `;` `|` `&` `$` `` ` `` `<` `>` or a newline**, naming
+  `params.<name>.value` and the character, because a value is passed to the tool as one argument, never through a shell.
+- A `relpath` value is not empty, is not absolute (does not start with `/`), does not start with `~`, has no `..`
+  segment and has no `*`. The runner joins it under `repo_root`.
+- An `int` value is a whole number (an optional sign and decimal digits).
 
 ```yaml
 params:
@@ -173,12 +184,22 @@ params:
 ```yaml
 params:
   jobs: {type: int, value: many}                 # refused: params.jobs.value: "many" is not an integer
+  where: {type: relpath, value: /etc/passwd}     # refused: params.where.value is absolute
+  label: {type: string, value: "a;b"}            # refused: params.label.value contains the shell metacharacter ';'
 ```
+
+### The path character class
+
+A path in `inputs`, `config`, `output.path` and `fixture.repo` is 1 to 512 characters, starts with a letter, a digit,
+`.` or `_`, and continues with letters (`A-Z`, `a-z`), digits, `.`, `_`, `-`, `/` and `*`. In regular-expression form,
+`^[A-Za-z0-9._][A-Za-z0-9._/*-]*$`. A space, `+`, `@`, `~`, `:` or a leading `/` or `-` is outside the class, so
+`inputs: ["my dir"]` is refused. The JSON Schema applies the class; the runner adds the `..` and `*` rules below.
+A `relpath` param is a different field and follows the rule under `params`, not this class.
 
 ### `inputs`
 
-The paths the tool reads, relative to `repo_root`, each without a `..` segment and without a leading `/`. A `*` may
-appear in an `inputs` path as a glob. The list is declared so a gate can show the tool only what it needs; the public
+The paths the tool reads, relative to `repo_root`, each in the path character class, without a `..` segment and
+without a leading `/`. A `*` may appear in an `inputs` path as a glob. The list is declared so a gate can show the tool only what it needs; the public
 runner does not restrict reads.
 
 ```yaml
@@ -259,19 +280,36 @@ The JSON Schema carries the shape of every field, the closed lists, the required
 as a character class on each `command` element, the metacharacter refusal. A JSON Schema validator reports where a
 value was refused, not which character, and it cannot do the following, which the runner adds:
 
-- name the element and the character of a metacharacter, and the allowed keys of an unknown-key refusal;
-- refuse a `..` segment in a path, and a `*` outside `inputs`;
-- refuse a placeholder that names no input, a placeholder in the program position, an unbalanced `{{`, and
-  `{{config_path}}` without `config`;
-- refuse an `int` extra input that is not an integer;
-- refuse a key written twice in YAML.
+- name the element and the character of a metacharacter in a `command` element or in any `params` value, and print the
+  allowed keys of an unknown-key refusal;
+- refuse a `..` segment in `config`, `output.path`, `fixture.repo`, `inputs` and a `relpath` value, and a `*` in all of
+  them except `inputs`;
+- refuse a `relpath` value that is empty, absolute or starts with `~`;
+- refuse an `int` value that is not a whole number, and a `params` type outside `string, int, relpath` (naming the
+  param and listing the three);
+- refuse a placeholder that names no input, a placeholder in the program position (`command[0]`), an unbalanced or
+  empty `{{`, and `{{config_path}}` without `config`;
+- refuse a key written twice in YAML, and a second YAML document in the file.
+
+The runner also repeats four schema rules so that they hold whatever file `--record-schema` names, even `{}`: the
+required keys (every key in the table above except `config` and `params`), `exit_map.default`, the `schema` value
+`tool-invocation/v1`, and the `params` name pattern. Everything else in the schema (the patterns of `id`, `ecosystem`,
+`pin`, `egress`, the path character class, the `exit_map` key range, the closed lists) is judged by the schema file
+alone.
+
+Two refusals are not about the record but about the run, and check (c) prints them: an `output.path` that already
+exists in the fixture, and a fixture directory that holds a symlink or any file that is neither regular nor a
+directory.
 
 A record is valid when it passes both. The runner prints each problem on its own line, those from the extra rules
-prefixed `rule:` and those from the schema prefixed `schema:`.
+prefixed `rule:` and those from the schema prefixed `schema:`. Check (a) says which schema bytes judged the record:
+the sha256 of the embedded schema, or of the file `--record-schema` named.
 
 ## Normalisation: what an output must satisfy
 
-The output file is checked by `format`. What the public runner measures:
+The output file is checked by `format`. What the public runner measures (for the three JSON formats, "well-formed
+JSON" means exactly one JSON value and then the end of the file: data after the first value is refused, naming
+`output.path`):
 
 **`junit-xml`.** Well-formed XML whose root element is `testsuites` or `testsuite`; at least one `testcase` below it;
 every `testcase` has a non-empty `name`; and inside any one `testsuite`, no two `testcase` elements share the same
@@ -354,23 +392,59 @@ the same way, and the step's outcome comes from the exit map.
 
 ## The conformance runner
 
+### Build and run
+
+You need Go (the version in `conformance/go.mod`) and nothing else. From the repository root:
+
+```
+go -C conformance build -o /tmp/tool-conformance ./cmd/tool-conformance
+/tmp/tool-conformance --record <your-record.yaml> --fixtures-root conformance/testdata/tool-fixtures --asset <the pinned file>
+```
+
+The built binary carries the `tool-invocation/v1` schema (`go:embed`), so it validates from any directory. A copy of
+that schema sits beside the runner source (`conformance/cmd/tool-conformance/tool-invocation-v1.schema.json`), and a
+test holds it byte-identical to `spec/schemas/tool-invocation-v1.schema.json`. To judge a record against another file,
+pass `--record-schema <file>`: the runner then uses that file instead and prints its sha256 on the (a) line, and its own
+rules (above) still apply. Without the flag, the (a) line prints the sha256 of the embedded schema.
+
+An example record, for a secret scanner run over the `secret-synthetic` fixture (illustrative: this repository does not
+run the scanner, and the pin digest is a placeholder you replace with the sha256 of your scanner binary):
+
+```yaml
+schema: tool-invocation/v1
+id: secret-scan
+ecosystem: any
+version: "8.18.4"
+pin: {asset: scanner-linux-amd64, sha256: 9f2c0a7d5b1e4c38a6d0f1e2b3c4d5a69788796a5b4c3d2e1f00112233445566}
+licence_class: osi
+command: [scanner, detect, --source, "{{repo_root}}", --config, "{{config_path}}", --report-path, "{{output_path}}"]
+config: .gitleaks.toml
+inputs: ["."]
+egress: none
+exit_map: {0: clean, 1: findings, default: tool-error}
+output: {format: sarif-2.1.0, path: report.sarif}
+fixture: {repo: secret-synthetic, expect: findings}
+```
+
+### Usage
+
 ```
 tool-conformance --record <file> --fixtures-root <dir> [--output-schema <file>] [--asset <file>]
                  [--record-schema <file>] [--timeout <duration>]
 ```
 
-`--record-schema` defaults to `spec/schemas/tool-invocation-v1.schema.json`, relative to the directory you run in.
-`--timeout` defaults to 60 seconds. It runs these checks in order, stops at the first `FAIL`, and prints one line per
+`--timeout` defaults to 60 seconds. A usage error or an unloadable `--record-schema` exits 2 and still ends with the
+egress remark. It runs these checks in order, stops at the first `FAIL`, and prints one line per
 check in the form `(<letter>) <STATUS>: <text>`:
 
 | check | what it does |
 |---|---|
-| (a) | the record validates against the schema, plus the runner's extra rules |
+| (a) | the record validates against the schema (its sha256 is printed), plus the runner's own rules |
 | (b) | an `asset` pin's sha256 is compared with `--asset`; an `image` pin is `NOT APPLICABLE`; an asset pin with no `--asset` is `UNMEASURED` |
 | (c) | the argv runs with the inputs bound, in a fresh copy of the fixture, under the timeout |
 | (d) | the exit code maps through `exit_map` and must equal `fixture.expect` |
 | (e) | the output file exists and is checked by its format, as above |
-| (f) | the last line, always printed, says egress was not observed |
+| (f) | the last line, printed on every path including the exit-2 ones, says egress was not observed |
 
 A line is `PASS`, `FAIL`, `NOT APPLICABLE` or `UNMEASURED`. The exit status is 0 when no check failed and 1 when one did;
 2 means a usage error. `UNMEASURED` and `NOT APPLICABLE` never make the exit status non-zero, and the `summary:` line
