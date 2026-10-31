@@ -1,0 +1,7 @@
+title = "synthetic fixture rule"
+
+[[rules]]
+id = "synthetic-fixture-token"
+description = "Matches only the made-up token shape used by the secret-synthetic fixture"
+regex = '''TSFIXTURE-SYNTHETIC-[0-9a-f]{16}'''
+keywords = ["tsfixture-synthetic"]

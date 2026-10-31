@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tool-invocation/v1",
+  "title": "Tool invocation record, version 1",
+  "description": "A record that says how one external tool is run against a repository and what its outcome means (spec/TOOL_RECORD_V1.md). This schema carries the shape rules. The rules it cannot express are added by the conformance runner: the named element and character of a shell metacharacter, a '..' segment in a relative path, a placeholder that names no input, duplicate YAML keys, and the allowed-key lists printed with an unknown-key refusal.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "ecosystem", "version", "pin", "licence_class", "command", "inputs", "egress", "exit_map", "output", "fixture"],
+  "properties": {
+    "schema": { "const": "tool-invocation/v1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
+    "ecosystem": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "pin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["image"],
+          "properties": {
+            "image": { "type": "string", "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["asset", "sha256"],
+          "properties": {
+            "asset": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      ]
+    },
+    "licence_class": { "enum": ["osi", "paid-pack"] },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1, "pattern": "^[^;|&$`<>\\n]*$" }
+    },
+    "config": { "$ref": "#/$defs/relative_path" },
+    "extra_inputs": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{0,31}$",
+        "not": { "enum": ["repo_root", "output_path", "config_path"] }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "value"],
+        "properties": {
+          "type": { "enum": ["string", "int", "path"] },
+          "value": { "type": "string", "maxLength": 1024 }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/relative_path" }
+    },
+    "egress": {
+      "oneOf": [
+        { "const": "none" },
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
+          }
+        }
+      ]
+    },
+    "exit_map": {
+      "type": "object",
+      "required": ["default"],
+      "propertyNames": {
+        "pattern": "^(default|0|[1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5])$"
+      },
+      "additionalProperties": { "enum": ["clean", "findings", "tool-error"] }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "path"],
+      "properties": {
+        "format": { "enum": ["sarif-2.1.0", "junit-xml", "cyclonedx-1.5", "json"] },
+        "path": { "$ref": "#/$defs/relative_path" }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "expect"],
+      "properties": {
+        "repo": { "$ref": "#/$defs/relative_path" },
+        "expect": { "enum": ["clean", "findings"] }
+      }
+    }
+  },
+  "$defs": {
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/*-]*$"
+    }
+  }
+}
