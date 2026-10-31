@@ -56,7 +56,14 @@
         "allOf": [
           {
             "if": { "properties": { "type": { "const": "int" } }, "required": ["type"] },
-            "then": { "properties": { "value": { "pattern": "^[+-]?[0-9]+$" } } }
+            "then": {
+              "properties": {
+                "value": {
+                  "description": "A signed decimal integer within the signed 64-bit range (the engine reads it with strconv.Atoi). A pattern cannot hold the range, so the schema checks the shape and the runner checks the range.",
+                  "pattern": "^[+-]?[0-9]+$"
+                }
+              }
+            }
           },
           {
             "if": { "properties": { "type": { "const": "relpath" } }, "required": ["type"] },
@@ -65,9 +72,8 @@
                 "value": {
                   "minLength": 1,
                   "allOf": [
-                    { "pattern": "^[^/~*]" },
-                    { "not": { "pattern": "(^|/)\\.\\.(/|$)" } },
-                    { "pattern": "^[^*]*$" }
+                    { "pattern": "^[^/~]" },
+                    { "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
                   ]
                 }
               }

@@ -173,8 +173,9 @@ string of at most 1024 characters; any other `type` is refused, naming the param
 - **Every value, of every type, is refused if it carries one of `;` `|` `&` `$` `` ` `` `<` `>` or a newline**, naming
   `params.<name>.value` and the character, because a value is passed to the tool as one argument, never through a shell.
 - A `relpath` value is not empty, is not absolute (does not start with `/`), does not start with `~`, has no `..`
-  segment and has no `*`. The runner joins it under `repo_root`.
-- An `int` value is a whole number (an optional sign and decimal digits).
+  segment. A `*` is allowed, as in the engine's check. The runner joins it under `repo_root`.
+- An `int` value is a signed decimal integer within the signed 64-bit range (an optional sign and decimal digits, as
+  the engine reads it with `strconv.Atoi`). The schema holds the shape; only the runner checks the range.
 
 ```yaml
 params:
@@ -183,7 +184,7 @@ params:
 ```
 ```yaml
 params:
-  jobs: {type: int, value: many}                 # refused: params.jobs.value: "many" is not an integer
+  jobs: {type: int, value: many}                 # refused: params.jobs.value: "many" is not a signed decimal integer within the 64-bit range
   where: {type: relpath, value: /etc/passwd}     # refused: params.where.value is absolute
   label: {type: string, value: "a;b"}            # refused: params.label.value contains the shell metacharacter ';'
 ```
@@ -283,9 +284,10 @@ value was refused, not which character, and it cannot do the following, which th
 - name the element and the character of a metacharacter in a `command` element or in any `params` value, and print the
   allowed keys of an unknown-key refusal;
 - refuse a `..` segment in `config`, `output.path`, `fixture.repo`, `inputs` and a `relpath` value, and a `*` in all of
-  them except `inputs`;
+  them except `inputs` and a `relpath` value;
 - refuse a `relpath` value that is empty, absolute or starts with `~`;
-- refuse an `int` value that is not a whole number, and a `params` type outside `string, int, relpath` (naming the
+- refuse an `int` value that is not a signed decimal integer within the 64-bit range (the schema checks the shape; only
+  the runner checks the range), and a `params` type outside `string, int, relpath` (naming the
   param and listing the three);
 - refuse a placeholder that names no input, a placeholder in the program position (`command[0]`), an unbalanced or
   empty `{{`, and `{{config_path}}` without `config`;

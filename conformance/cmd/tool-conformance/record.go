@@ -312,7 +312,7 @@ func extraRules(doc any) []string {
 			switch e["type"] {
 			case "int":
 				if _, err := strconv.Atoi(val); err != nil {
-					add("%s.value: %q is not an integer", where, val)
+					add("%s.value: %q is not a signed decimal integer within the 64-bit range", where, val)
 				}
 			case "relpath":
 				switch {
@@ -321,7 +321,8 @@ func extraRules(doc any) []string {
 				case strings.HasPrefix(val, "/") || strings.HasPrefix(val, "~"):
 					add("%s.value: %q is absolute or starts with '~'; a relpath is relative to the repository", where, val)
 				}
-				checkRel(add, where+".value", val, false)
+				// The engine's relpath check does not refuse '*', so neither does the runner here.
+				checkRel(add, where+".value", val, true)
 			}
 		}
 	}

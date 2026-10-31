@@ -22,6 +22,19 @@ func TestParamsMatchTheEngineShape(t *testing.T) {
 			t.Fatalf("check (a) is %q, want PASS (exit %d)\n%s", l, code, out)
 		}
 	})
+	// The engine's relpath check does not refuse '*'; the runner agrees, so a glob is a valid relpath value.
+	t.Run("a relpath value with a star reads (a) PASS for that param", func(t *testing.T) {
+		code, out := runRecord(t, mutate(t, withParam("params", "relpath", "src/*.go")), withAsset(t)...)
+		if l := statusLine(out, "a"); !strings.HasPrefix(l, "(a) PASS:") {
+			t.Fatalf("check (a) is %q, want PASS (exit %d)\n%s", l, code, out)
+		}
+	})
+	t.Run("the largest 64-bit int reads (a) PASS", func(t *testing.T) {
+		code, out := runRecord(t, mutate(t, withParam("params", "int", "9223372036854775807")), withAsset(t)...)
+		if l := statusLine(out, "a"); !strings.HasPrefix(l, "(a) PASS:") {
+			t.Fatalf("check (a) is %q, want PASS (exit %d)\n%s", l, code, out)
+		}
+	})
 	t.Run("extra_inputs is refused, naming it and listing the allowed keys", func(t *testing.T) {
 		code, out := runRecord(t, mutate(t, withParam("extra_inputs", "relpath", "src")), withAsset(t)...)
 		if code != 1 || !strings.HasPrefix(statusLine(out, "a"), "(a) FAIL:") {
@@ -63,8 +76,14 @@ func TestSchemaAndParamControls(t *testing.T) {
 			[]problem{{"schema", "params.lang.value"}, {"rule", "params.lang.value"}}},
 		{"relpath value is empty", withParam("params", "relpath", ""),
 			[]problem{{"schema", "params.lang.value"}, {"rule", "params.lang.value"}}},
+		// The rule line carries the character, which only the metacharacter guard prints; the int rule's
+		// "is not a signed decimal integer" line names the value in double quotes and never the quoted rune.
 		{"int value carries a pipe", withParam("params", "int", "4|5"),
-			[]problem{{"schema", "params.lang.value"}, {"rule", "params.lang.value"}}},
+			[]problem{{"schema", "params.lang.value"}, {"rule", "params.lang.value"}, {"rule", `'|'`}}},
+		{"relpath value carries a pipe", withParam("params", "relpath", "a|b"),
+			[]problem{{"schema", "params.lang.value"}, {"rule", "params.lang.value"}, {"rule", `'|'`}}},
+		{"int value is beyond the 64-bit range", withParam("params", "int", "99999999999999999999"),
+			[]problem{{"rule", "params.lang.value"}, {"rule", "64-bit range"}}},
 		{"param name has a capital", rename("Lang"),
 			[]problem{{"schema", "params.Lang"}, {"rule", "params.Lang"}}},
 		{"param name is one character", rename("x"),
