@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -405,14 +406,27 @@ func TestChecksReadTheRecording(t *testing.T) {
 					in.Calls[i].Body = append([]byte(nil), in.Calls[i].Body...)
 				}
 				c.vary(&in)
-				var red []string
-				for _, r := range checks.All(in) {
-					if !r.Pass {
-						red = append(red, r.ID)
+				// Every row is judged under both profiles (review condition C1): under import a failing
+				// recording still fails exactly its check, except traceparent-to-sut, which is not
+				// applicable there and must say so rather than pass.
+				for _, profile := range []string{"", checks.ProfileImport} {
+					in.Profile = profile
+					var red []string
+					for _, r := range checks.All(in) {
+						if r.Failed() {
+							red = append(red, r.ID)
+						}
+						if r.ID == checks.IDTraceparent && profile == checks.ProfileImport && !r.NotApplicable {
+							t.Fatalf("import profile: %s answered pass or fail, want not applicable", r.ID)
+						}
 					}
-				}
-				if len(red) != 1 || red[0] != c.failed {
-					t.Fatalf("want only %s red, got %v", c.failed, red)
+					want := []string{c.failed}
+					if profile == checks.ProfileImport && c.failed == checks.IDTraceparent {
+						want = nil
+					}
+					if !slices.Equal(red, want) {
+						t.Fatalf("profile %q: want only %v red, got %v", profile, want, red)
+					}
 				}
 			})
 		}

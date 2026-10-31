@@ -51,7 +51,17 @@ did; it changes nothing on the wire, which is `v1` in both.
   Evidence is attached as usual, and at least the result file itself. Events, `closeTestRun` and the
   run result are exactly those of `live`. An import adapter states in its own documentation that it
   uses this profile, and it **never claims** that a `traceparent` reached the system under test:
-  by the time it starts a step the test has already run.
+  by the time it starts a step the test has already run. Where the result file records no duration
+  for an item, the adapter sends `duration_ms` 0, never a figure it did not read; a reader cannot
+  tell that 0 from a test that took no time.
+
+**What a profile claim is worth.** The profile is the adapter's own claim, in its documentation;
+the suite cannot verify it. A `live` adapter whose `traceparent` handling is broken still passes
+`--profile import`, so **a conformance claim made under `import` names the profile** ("conforms to
+v1, import profile"). Under `import` the suite checks that every `duration_ms` is present and 0 or
+more, not that it is the duration the result file records, and a step's start and finish times are
+the moments the adapter reported them, not the moments the test ran: read an import run's timing
+from `duration_ms`, never from the step times.
 
 The suite judges an adapter under one profile, named with `--profile live|import` (section 12;
 `live` when the flag is absent). Under `import` it runs every check. Two answers change, and both
@@ -487,7 +497,9 @@ how many calls they looked at, and a run that made no call at all never reaches 
 workers racing (ruling 3 is checked through its effects: one start and one result per `step_id`); it
 cannot tell a retried item's attempts from separate items except by the count of steps (ruling 4);
 and it cannot tell an item whose body never ran from one that failed, so the `error` and its failure
-text (ruling 5) are checked only as far as `step-result-valid` and `step-per-item` go.
+text (ruling 5) are checked only as far as `step-result-valid` and `step-per-item` go. Under
+`--profile import` it cannot tell whether the adapter could have carried a `traceparent`, nor
+whether a `duration_ms` is the one the result file records (section 1.1).
 
 **Mutants.** The suite's own fixture adapter (`conformance/internal/sampleadapter`, run over the
 sample project in `conformance/testdata/sample-project`) passes every check. Each mutant breaks one
@@ -593,6 +605,7 @@ is unchanged (`v1`); no request, response or schema gains a field, and no reason
 | 4 | a check result has a third state, not applicable: neither a pass nor a failure, and the exit code is 0 only when no check failed | 12 |
 | 5 | the fixture adapter accepts `--profile import` and reports from a JUnit XML file it writes after running the items; every mutant fails the same check under it | 12 |
 | 6 | a request at the stand-in system is not forbidden under `import`, a `live` adapter judged under `import` passes, and a run judged under `live` that sends none still FAILS `traceparent-to-sut` | 1.1 |
+| review | the suite cannot verify a profile claim, so a conformance claim made under `import` names the profile; under `import` durations are checked for presence and sign only, step times are report times, and an item with no recorded duration is sent as 0 | 1.1, 12 |
 
 **What v1.1 passed and v1.2 fails:** nothing. The suite counts are unchanged (fifteen checks, eighteen
 mutants, a sample project of four items); `--profile` is a new flag and its default is the old
