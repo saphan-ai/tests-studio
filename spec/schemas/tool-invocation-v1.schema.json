@@ -5,7 +5,7 @@
   "description": "A record that says how one external tool is run against a repository and what its outcome means (spec/TOOL_RECORD_V1.md). This schema carries the shape rules. The rules it cannot express are added by the conformance runner: the named element and character of a shell metacharacter, a '..' segment in a relative path, a placeholder that names no input, duplicate YAML keys, and the allowed-key lists printed with an unknown-key refusal.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "ecosystem", "version", "pin", "licence_class", "command", "inputs", "egress", "exit_map", "output", "fixture"],
+  "required": ["schema", "id", "ecosystem", "version", "pin", "licence_class", "command", "inputs", "egress", "exit_map", "output", "fixture"],
   "properties": {
     "schema": { "const": "tool-invocation/v1" },
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
@@ -39,7 +39,7 @@
       "items": { "type": "string", "minLength": 1, "pattern": "^[^;|&$`<>\\n]*$" }
     },
     "config": { "$ref": "#/$defs/relative_path" },
-    "extra_inputs": {
+    "params": {
       "type": "object",
       "propertyNames": {
         "pattern": "^[a-z][a-z0-9_]{0,31}$",
@@ -50,7 +50,7 @@
         "additionalProperties": false,
         "required": ["type", "value"],
         "properties": {
-          "type": { "enum": ["string", "int", "path"] },
+          "type": { "enum": ["string", "int", "relpath"] },
           "value": { "type": "string", "maxLength": 1024 }
         }
       }

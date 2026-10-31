@@ -70,8 +70,8 @@ func bind(rec *record, root string) map[string]string {
 	if rec.Config != "" {
 		v["config_path"] = filepath.Join(root, filepath.FromSlash(rec.Config))
 	}
-	for name, e := range rec.ExtraInputs {
-		if e.Type == "path" {
+	for name, e := range rec.Params {
+		if e.Type == "relpath" {
 			v[name] = filepath.Join(root, filepath.FromSlash(e.Value))
 		} else {
 			v[name] = e.Value

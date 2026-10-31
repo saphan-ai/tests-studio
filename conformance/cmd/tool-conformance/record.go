@@ -25,11 +25,12 @@ var (
 	allowedFormats = []string{"sarif-2.1.0", "junit-xml", "cyclonedx-1.5", "json"}
 
 	topKeys = []string{"schema", "id", "ecosystem", "version", "pin", "licence_class", "command", "config",
-		"extra_inputs", "inputs", "egress", "exit_map", "output", "fixture"}
+		"params", "inputs", "egress", "exit_map", "output", "fixture"}
 	pinKeys     = []string{"image", "asset", "sha256"}
 	outputKeys  = []string{"format", "path"}
 	fixtureKeys = []string{"repo", "expect"}
-	extraKeys   = []string{"type", "value"}
+	paramKeys   = []string{"type", "value"}
+	paramTypes  = []string{"string", "int", "relpath"}
 )
 
 // record is the typed view of a record that has already passed check (a).
@@ -42,10 +43,10 @@ type record struct {
 		Asset  string `json:"asset"`
 		SHA256 string `json:"sha256"`
 	} `json:"pin"`
-	ExtraInputs map[string]struct {
+	Params map[string]struct {
 		Type  string `json:"type"`
 		Value string `json:"value"`
-	} `json:"extra_inputs"`
+	} `json:"params"`
 	ExitMap map[string]string `json:"exit_map"`
 	Output  struct {
 		Format string `json:"format"`
@@ -241,22 +242,25 @@ func extraRules(doc any) []string {
 	}
 
 	declared := map[string]bool{}
-	if ex, ok := obj(m["extra_inputs"]); ok {
+	if ex, ok := obj(m["params"]); ok {
 		for _, name := range sortedKeys(ex) {
 			declared[name] = true
 			e, ok := obj(ex[name])
 			if !ok {
 				continue
 			}
-			where := "extra_inputs." + name
-			checkKeys(where, e, extraKeys)
+			where := "params." + name
+			checkKeys(where, e, paramKeys)
 			val, _ := e["value"].(string)
+			if t, ok := e["type"].(string); ok && !contains(paramTypes, t) {
+				add("%s.type: %q is not one of: %s", where, t, strings.Join(paramTypes, ", "))
+			}
 			switch e["type"] {
 			case "int":
 				if _, err := strconv.Atoi(val); err != nil {
 					add("%s.value: %q is not an integer", where, val)
 				}
-			case "path":
+			case "relpath":
 				checkRel(add, where+".value", val, false)
 			case "string":
 				if r, bad := firstMeta(val); bad {
@@ -283,7 +287,7 @@ func extraRules(doc any) []string {
 				case i == 0:
 					add("command[0]: the program must be a literal, not the placeholder {{%s}}", name)
 				case !contains(closedInputs, name) && !declared[name]:
-					add("command[%d]: placeholder {{%s}} names no input; the closed set is %s, plus the names declared in extra_inputs", i, name, strings.Join(closedInputs, ", "))
+					add("command[%d]: placeholder {{%s}} names no input; the closed set is %s, plus the names declared in params", i, name, strings.Join(closedInputs, ", "))
 				case name == "config_path" && !hasConfig:
 					add("command[%d]: {{config_path}} is used but the record declares no \"config\"", i)
 				}

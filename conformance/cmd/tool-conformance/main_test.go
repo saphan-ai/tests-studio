@@ -85,6 +85,7 @@ func testExe(t *testing.T) (path, sum string) {
 func validRecord(t *testing.T) map[string]any {
 	exe, sum := testExe(t)
 	return map[string]any{
+		"schema":        "tool-invocation/v1",
 		"id":            "fake-junit",
 		"ecosystem":     "go",
 		"version":       "1.0.0",
@@ -174,7 +175,8 @@ func TestValidRecordPasses(t *testing.T) {
 
 func TestYAMLRecordPasses(t *testing.T) {
 	exe, sum := testExe(t)
-	doc := fmt.Sprintf(`id: fake-junit
+	doc := fmt.Sprintf(`schema: tool-invocation/v1
+id: fake-junit
 ecosystem: go
 version: "1.0.0"
 pin: {asset: fake-tool, sha256: %s}

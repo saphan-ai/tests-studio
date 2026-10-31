@@ -31,7 +31,7 @@ refused.
 
 | key | required | meaning |
 |---|---|---|
-| `schema` | no | the literal `tool-invocation/v1`; allowed so a record can state its own version |
+| `schema` | yes | the literal `tool-invocation/v1`; any other value is refused, naming `schema` |
 | `id` | yes | the tool's identifier |
 | `ecosystem` | yes | the kind of repository it reads (`go`, `node`, `container`, `any`, ...) |
 | `version` | yes | the tool version the record was written for |
@@ -39,17 +39,15 @@ refused.
 | `licence_class` | yes | `osi` or `paid-pack` |
 | `command` | yes | the argv |
 | `config` | no | a path under the repository the tool reads its configuration from |
-| `extra_inputs` | no | extra typed inputs the argv may name |
+| `params` | no | typed inputs the argv may name, each `{type, value}` |
 | `inputs` | yes | the paths the tool reads |
 | `egress` | yes | the hosts the tool may reach, or `none` |
 | `exit_map` | yes | what each exit code means |
 | `output` | yes | the file the tool writes and its format |
 | `fixture` | yes | the repository the record is checked against, and the outcome expected |
 
-Three optional keys (`schema`, `config`, `extra_inputs`) go beyond the field list the record was first described by.
-`config` and `extra_inputs` exist because the argv may name `{{config_path}}` and extra typed inputs, and a record has to
-say where those values come from. `schema` lets a record state its own version. All three are optional, so a record
-without them is complete.
+Two optional keys (`config`, `params`) exist because the argv may name `{{config_path}}` and declared typed inputs, and
+a record has to say where those values come from. A record without them is complete.
 
 ### `id`
 
@@ -127,14 +125,14 @@ redirects and no variable expansion happen. Each element is one argument.
 - **A shell metacharacter in any element is refused when the record is loaded**, naming the element and the character.
   The characters are `;` `|` `&` `$` `` ` `` `<` `>` and the newline.
 - A placeholder names one of the **closed** inputs `repo_root`, `output_path`, `config_path`, or a name declared in
-  `extra_inputs`. Any other name is refused.
+  `params`. Any other name is refused.
 
 | input | value at run time |
 |---|---|
 | `repo_root` | the absolute path of the repository the tool runs in (a fresh copy of the fixture, in the public runner) |
 | `output_path` | `repo_root` joined with `output.path`, absolute |
 | `config_path` | `repo_root` joined with `config`, absolute; needs `config` in the record |
-| an `extra_inputs` name | the declared value; a `path` is joined under `repo_root` |
+| a `params` name | the declared value; a `relpath` is joined under `repo_root` |
 
 The tool is started with `repo_root` as its working directory.
 
@@ -160,20 +158,21 @@ config: .gitleaks.toml          # valid
 config: ../outside.toml         # refused: command and config paths may not climb out of the repository
 ```
 
-### `extra_inputs`
+### `params`
 
-Optional. A mapping from an input name to `{type, value}`, where `type` is `string`, `int` or `path` and `value` is a
-string. A name matches `^[a-z][a-z0-9_]{0,31}$` and may not be `repo_root`, `output_path` or `config_path`. An `int`
+Optional. A mapping from an input name to `{type, value}`, where `type` is `string`, `int` or `relpath` and `value` is a
+string; any other `type` is refused, naming the param and listing `string, int, relpath`. A `relpath` value is a
+relative path that stays inside the repository (no `..` segment, no glob). A name matches `^[a-z][a-z0-9_]{0,31}$` and may not be `repo_root`, `output_path` or `config_path`. An `int`
 value must parse as an integer. A `string` value gets the same metacharacter refusal as `command`.
 
 ```yaml
-extra_inputs:
+params:
   min_severity: {type: string, value: high}      # valid
   jobs: {type: int, value: "4"}                  # valid
 ```
 ```yaml
-extra_inputs:
-  jobs: {type: int, value: many}                 # refused: extra_inputs.jobs.value: "many" is not an integer
+params:
+  jobs: {type: int, value: many}                 # refused: params.jobs.value: "many" is not an integer
 ```
 
 ### `inputs`
@@ -289,13 +288,20 @@ CycloneDX 1.5 JSON Schema file you pass with `--output-schema`.
 The checker does not ship the SARIF or CycloneDX schema files: you fetch them from their publishers and pass the file.
 It prints the sha256 of the file it used, so a reader of the result knows which bytes judged the output.
 
-| format | published schema (fetch it yourself) | sha256 of the file |
+| format | published schema (fetch it yourself) | sha256 of the published file |
 |---|---|---|
-| SARIF 2.1.0 | `https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json` | UNRUN: this repository's author fetched nothing; compute it with `sha256sum` on the file you fetched |
-| CycloneDX 1.5 | `https://raw.githubusercontent.com/CycloneDX/specification/1.5/schema/bom-1.5.schema.json` | UNRUN: same; the file refers to companion schema files that must sit beside it |
+| SARIF 2.1.0 | `https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json` (errata01) | `c3b4bb2d6093897483348925aaa73af03b3e3f4bd4ca38cef26dcb4212a2682e` |
+| CycloneDX 1.5 | `https://raw.githubusercontent.com/CycloneDX/specification/1.5/schema/bom-1.5.schema.json` | `067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b` |
+| CycloneDX 1.5 companion | `spdx.schema.json`, in the same directory as `bom-1.5.schema.json` | `4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc` |
+| CycloneDX 1.5 companion | `jsf-0.82.schema.json`, in the same directory as `bom-1.5.schema.json` | `8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae` |
 
-The two URLs are written from memory and are UNVERIFIED: check them before relying on them. A published sha256 is
-recorded here once someone has fetched the file and read it.
+remark: these four digests were measured by the tool-record master on 2026-10-31 from those URLs; this repository's
+author fetched nothing and has not re-measured them. `bom-1.5.schema.json` references the two companion files, which
+must sit beside it for the schema to compile.
+
+A schema file whose sha256 differs from the one above is not the published file. The runner prints the sha256 of the
+schema file it is given and does not refuse on a mismatch: a user may validate against a newer errata on purpose, so the
+digest says which bytes judged the output and is not a gate. No schema file is vendored in this repository.
 
 remark: with no `--output-schema`, a `sarif-2.1.0`, `cyclonedx-1.5` or `json` output is reported `UNMEASURED: no schema
 given`, never `PASS`: the runner then knows only that the file is JSON of the right identity, not that it is a valid
