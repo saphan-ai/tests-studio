@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -93,6 +95,9 @@ func checkJSONOutput(format, outPath, schemaPath string) (outcome, []string) {
 	var doc any
 	if err := dec.Decode(&doc); err != nil {
 		return outFail, []string{fmt.Sprintf("output is not well-formed JSON: %v", err)}
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return outFail, []string{"output.path is not well-formed JSON: data follows the first JSON value; the file must hold exactly one"}
 	}
 	if bad := identityProblem(format, doc); bad != "" {
 		return outFail, []string{bad}

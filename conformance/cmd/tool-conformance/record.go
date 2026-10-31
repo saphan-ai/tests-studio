@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,7 +33,20 @@ var (
 	fixtureKeys = []string{"repo", "expect"}
 	paramKeys   = []string{"type", "value"}
 	paramTypes  = []string{"string", "int", "relpath"}
+
+	// requiredKeys are the keys a record must carry; every other top-level key is optional.
+	requiredKeys = []string{"schema", "id", "ecosystem", "version", "pin", "licence_class", "command", "inputs", "egress", "exit_map", "output", "fixture"}
+	paramNameRe  = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{1,63}$`)
 )
+
+// recordSchemaID is the one value `schema` may hold.
+const recordSchemaID = "tool-invocation/v1"
+
+// embeddedRecordSchema is the tool-invocation/v1 schema the runner carries, so it validates from any working
+// directory. A test holds it byte-identical to spec/schemas/tool-invocation-v1.schema.json.
+//
+//go:embed tool-invocation-v1.schema.json
+var embeddedRecordSchema []byte
 
 // record is the typed view of a record that has already passed check (a).
 type record struct {
@@ -66,11 +81,16 @@ func loadDocument(path string) (any, error) {
 		return nil, err
 	}
 	var n yaml.Node
-	if err := yaml.Unmarshal(raw, &n); err != nil {
+	docs := yaml.NewDecoder(bytes.NewReader(raw))
+	if err := docs.Decode(&n); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, errors.New("the file is empty")
+		}
 		return nil, fmt.Errorf("not valid YAML or JSON: %w", err)
 	}
-	if n.Kind == 0 {
-		return nil, errors.New("the file is empty")
+	var more yaml.Node
+	if err := docs.Decode(&more); err == nil {
+		return nil, errors.New("the file holds more than one YAML document (a second one follows a '---'); a record is exactly one document")
 	}
 	v, err := nodeToAny(&n, "record")
 	if err != nil {
@@ -133,6 +153,17 @@ func nodeToAny(n *yaml.Node, path string) (any, error) {
 		}
 		return v, nil
 	}
+}
+
+// compileEmbeddedRecordSchema compiles the schema the runner carries.
+func compileEmbeddedRecordSchema() (*jsonschema.Schema, error) {
+	c := jsonschema.NewCompiler()
+	c.Draft = jsonschema.Draft2020
+	const url = "tool-invocation-v1.schema.json"
+	if err := c.AddResource(url, bytes.NewReader(embeddedRecordSchema)); err != nil {
+		return nil, err
+	}
+	return c.Compile(url)
 }
 
 // compileSchemaFile compiles the schema at path; references that are relative resolve beside the file.
@@ -212,6 +243,20 @@ func extraRules(doc any) []string {
 		}
 	}
 	checkKeys("(record)", m, topKeys)
+	// The runner holds these itself, so they stand whatever schema file was named.
+	for _, k := range requiredKeys {
+		if _, ok := m[k]; !ok {
+			add("%s: the required key is missing", k)
+		}
+	}
+	if v, ok := m["schema"]; ok && v != recordSchemaID {
+		add("schema: %v is not %q; the schema key must be exactly that", v, recordSchemaID)
+	}
+	if em, ok := obj(m["exit_map"]); ok {
+		if _, ok := em["default"]; !ok {
+			add("exit_map.default: the required key is missing")
+		}
+	}
 	if pin, ok := obj(m["pin"]); ok {
 		checkKeys("pin", pin, pinKeys)
 	}
@@ -245,15 +290,21 @@ func extraRules(doc any) []string {
 	if ex, ok := obj(m["params"]); ok {
 		for _, name := range sortedKeys(ex) {
 			declared[name] = true
+			where := "params." + name
+			if !paramNameRe.MatchString(name) || contains(closedInputs, name) {
+				add("%s: the name must match %s and not be one of %s", where, paramNameRe, strings.Join(closedInputs, ", "))
+			}
 			e, ok := obj(ex[name])
 			if !ok {
 				continue
 			}
-			where := "params." + name
 			checkKeys(where, e, paramKeys)
 			val, _ := e["value"].(string)
 			if t, ok := e["type"].(string); ok && !contains(paramTypes, t) {
 				add("%s.type: %q is not one of: %s", where, t, strings.Join(paramTypes, ", "))
+			}
+			if r, bad := firstMeta(val); bad {
+				add("%s.value: %q contains the shell metacharacter %s; a value is passed as one argument, never through a shell", where, val, strconv.QuoteRune(r))
 			}
 			switch e["type"] {
 			case "int":
@@ -261,11 +312,13 @@ func extraRules(doc any) []string {
 					add("%s.value: %q is not an integer", where, val)
 				}
 			case "relpath":
-				checkRel(add, where+".value", val, false)
-			case "string":
-				if r, bad := firstMeta(val); bad {
-					add("%s.value: contains the shell metacharacter %s", where, strconv.QuoteRune(r))
+				switch {
+				case val == "":
+					add("%s.value: a relpath is not empty", where)
+				case strings.HasPrefix(val, "/") || strings.HasPrefix(val, "~"):
+					add("%s.value: %q is absolute or starts with '~'; a relpath is relative to the repository", where, val)
 				}
+				checkRel(add, where+".value", val, false)
 			}
 		}
 	}

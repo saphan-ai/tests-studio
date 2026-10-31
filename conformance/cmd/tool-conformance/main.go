@@ -5,6 +5,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 const egressRemark = "remark: egress was NOT observed: this runner does not confine the tool and cannot see its network traffic, so no line above says anything about it; the engine's gate does the confining and the observing."
@@ -44,15 +48,22 @@ func (r *report) detail(lines ...string) {
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout)) }
 
-// run returns 0 when no check failed, 1 when one did, and 2 for a usage error.
+// run returns 0 when no check failed, 1 when one did, and 2 for a usage error. The egress remark is the last
+// line on every path, the exit-2 ones included.
 func run(args []string, out io.Writer) int {
+	code := runChecks(args, out)
+	fmt.Fprintln(out, egressRemark)
+	return code
+}
+
+func runChecks(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("tool-conformance", flag.ContinueOnError)
 	fs.SetOutput(out)
 	recordPath := fs.String("record", "", "the tool-invocation record to check (YAML or JSON)")
 	fixturesRoot := fs.String("fixtures-root", "", "the directory that holds the fixture repositories")
 	outputSchema := fs.String("output-schema", "", "a JSON Schema file for a sarif, cyclonedx or json output")
 	assetFile := fs.String("asset", "", "the file an asset pin names; its sha256 is compared with the pin")
-	recordSchema := fs.String("record-schema", "spec/schemas/tool-invocation-v1.schema.json", "the tool-invocation/v1 schema file")
+	recordSchema := fs.String("record-schema", "", "override the tool-invocation/v1 schema the runner carries with this file; its sha256 is printed")
 	timeout := fs.Duration("timeout", 60*time.Second, "how long the tool may run")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -61,20 +72,34 @@ func run(args []string, out io.Writer) int {
 		fmt.Fprintln(out, "usage: tool-conformance --record <file> --fixtures-root <dir> [--output-schema <file>] [--asset <file>] [--record-schema <file>] [--timeout <duration>]")
 		return 2
 	}
-	schema, err := compileSchemaFile(*recordSchema)
+	var (
+		schema   *jsonschema.Schema
+		err      error
+		schemaID string // what check (a) prints to say which schema bytes judged the record
+	)
+	if *recordSchema == "" {
+		schema, err = compileEmbeddedRecordSchema()
+		sum := sha256.Sum256(embeddedRecordSchema)
+		schemaID = fmt.Sprintf("the embedded schema (sha256 %s)", hex.EncodeToString(sum[:]))
+	} else {
+		var sum string
+		if sum, err = fileSHA256(*recordSchema); err == nil {
+			schema, err = compileSchemaFile(*recordSchema)
+		}
+		schemaID = fmt.Sprintf("the schema file %s (sha256 %s)", *recordSchema, sum)
+	}
 	if err != nil {
-		fmt.Fprintf(out, "cannot load the record schema %s: %v\n", *recordSchema, err)
+		fmt.Fprintf(out, "cannot load the record schema: %v\n", err)
 		return 2
 	}
 
 	r := &report{w: out}
-	check(r, schema, *recordPath, *fixturesRoot, *outputSchema, *assetFile, *timeout)
+	check(r, schema, schemaID, *recordPath, *fixturesRoot, *outputSchema, *assetFile, *timeout)
 	summary := fmt.Sprintf("summary: %d PASS, %d FAIL, %d NOT APPLICABLE, %d UNMEASURED", r.pass, r.fail, r.na, r.un)
 	if r.fail > 0 {
 		summary += "; the checks after the first FAIL were not run"
 	}
 	fmt.Fprintln(out, summary)
-	fmt.Fprintln(out, egressRemark)
 	if r.fail > 0 {
 		return 1
 	}
@@ -82,7 +107,7 @@ func run(args []string, out io.Writer) int {
 }
 
 // check runs (a) to (e) in order and returns at the first FAIL.
-func check(r *report, schema interface{ Validate(any) error }, recordPath, fixturesRoot, outputSchema, assetFile string, timeout time.Duration) {
+func check(r *report, schema interface{ Validate(any) error }, schemaID, recordPath, fixturesRoot, outputSchema, assetFile string, timeout time.Duration) {
 	// (a) the record
 	doc, err := loadDocument(recordPath)
 	if err != nil {
@@ -94,7 +119,7 @@ func check(r *report, schema interface{ Validate(any) error }, recordPath, fixtu
 		problems = append(problems, schemaProblems(err)...)
 	}
 	if len(problems) > 0 {
-		r.line("a", "FAIL", fmt.Sprintf("the record is refused, %d problem(s)", len(problems)))
+		r.line("a", "FAIL", fmt.Sprintf("the record is refused, %d problem(s); judged against %s and the runner's own rules", len(problems), schemaID))
 		r.detail(problems...)
 		return
 	}
@@ -103,7 +128,7 @@ func check(r *report, schema interface{ Validate(any) error }, recordPath, fixtu
 		r.line("a", "FAIL", fmt.Sprintf("the record validates but cannot be read: %v", err))
 		return
 	}
-	r.line("a", "PASS", fmt.Sprintf("record %q validates against tool-invocation/v1 and the runner's extra rules", rec.ID))
+	r.line("a", "PASS", fmt.Sprintf("record %q validates against %s and the runner's own rules (schema key, required keys, params)", rec.ID, schemaID))
 
 	// (b) the pin
 	if !checkPin(r, &rec, assetFile) {
@@ -153,7 +178,11 @@ func check(r *report, schema interface{ Validate(any) error }, recordPath, fixtu
 
 func checkPin(r *report, rec *record, assetFile string) bool {
 	if rec.Pin.Image != "" {
-		r.line("b", "NOT APPLICABLE", "this runner does not pull images; the image pin was not checked")
+		msg := "this runner does not pull images; the image pin was not checked"
+		if assetFile != "" {
+			msg += fmt.Sprintf("; --asset %s was given and ignored, because an image pin names no file", assetFile)
+		}
+		r.line("b", "NOT APPLICABLE", msg)
 		return true
 	}
 	if assetFile == "" {

@@ -43,6 +43,12 @@ func fakeTool(mode, arg string) int {
 		os.WriteFile(arg, []byte(fakeJUnit), 0o644)
 	case "sarif":
 		os.WriteFile(arg, []byte(fakeSARIF), 0o644)
+	case "sarif-trailing":
+		os.WriteFile(arg, []byte(`{"version":"2.1.0","runs":[{}]} x`), 0o644)
+	case "json-trailing":
+		os.WriteFile(arg, []byte(`{"a":1} x`), 0o644)
+	case "cyclonedx-trailing":
+		os.WriteFile(arg, []byte(`{"bomFormat":"CycloneDX","specVersion":"1.5"} x`), 0o644)
 	case "junit-at-root":
 		// arg is {{repo_root}}: it must be a directory holding the fixture, and the tool runs inside it.
 		if _, err := os.Stat(filepath.Join(arg, "calc.go")); err != nil {
@@ -151,6 +157,20 @@ func statusLine(out, letter string) string {
 		}
 	}
 	return ""
+}
+
+// problem names one refusal line of check (a): a line the runner printed under the (a) FAIL, sourced from the
+// schema ("schema:") or from the runner's own rules ("rule:"), that contains sub. Asserting on a problem line
+// rather than on the whole output keeps a test from being satisfied by a remark or a line prefix.
+type problem struct{ source, sub string }
+
+func hasProblem(out string, p problem) bool {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "    "+p.source+": ") && strings.Contains(l, p.sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func lastLine(out string) string {
@@ -310,8 +330,14 @@ func TestUnknownKeyIsRefusedWithTheAllowedList(t *testing.T) {
 func TestMissingRequiredFieldIsNamed(t *testing.T) {
 	rec := mutate(t, func(r map[string]any) { delete(r, "egress") })
 	code, out := runRecord(t, rec, withAsset(t)...)
-	if code != 1 || !strings.Contains(out, "egress") || !strings.HasPrefix(statusLine(out, "a"), "(a) FAIL:") {
+	if code != 1 || !strings.HasPrefix(statusLine(out, "a"), "(a) FAIL:") {
 		t.Fatalf("exit %d\n%s", code, out)
+	}
+	// The egress remark names "egress" on every run, so the field is asserted on the problem lines.
+	for _, p := range []problem{{"schema", "'egress'"}, {"rule", "egress: the required key is missing"}} {
+		if !hasProblem(out, p) {
+			t.Errorf("no %s problem line contains %q\n%s", p.source, p.sub, out)
+		}
 	}
 }
 
@@ -550,7 +576,8 @@ func TestSyntheticSecretMatchesNoProviderPrefix(t *testing.T) {
 	if value == "" {
 		t.Fatal("the rule does not match app.conf")
 	}
-	for _, prefix := range []string{"AKIA", "ghp_", "gho_", "xox", "sk_live_", "AIza"} {
+	for _, prefix := range []string{"AKIA", "ASIA", "ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_", "glpat-", "xox",
+		"sk_live_", "rk_live_", "sk-ant-", "sk-proj-", "npm_", "AIza", "-----BEGIN"} {
 		if strings.Contains(string(raw), prefix) {
 			t.Errorf("app.conf contains the provider prefix %q", prefix)
 		}
