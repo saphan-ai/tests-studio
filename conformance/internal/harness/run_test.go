@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,17 +35,29 @@ func projectFile() string {
 
 func runInProcess(t *testing.T, mode stubs.Mode, mutant string) harness.Report {
 	t.Helper()
+	return runProfile(t, mode, checks.ProfileLive, mutant)
+}
+
+// runProfile runs the sample adapter reporting as the named profile, judged under that profile.
+func runProfile(t *testing.T, mode stubs.Mode, profile, mutant string) harness.Report {
+	t.Helper()
+	return runAs(t, mode, profile, profile, mutant)
+}
+
+// runAs lets the adapter report as one profile while the suite judges it as another.
+func runAs(t *testing.T, mode stubs.Mode, adapterProfile, judgedAs, mutant string) harness.Report {
+	t.Helper()
 	dir, err := schemas.FindSpecDir("", ".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	hosts := &harness.MemoryHosts{}
-	cmd := []string{"sample-adapter", "--project", projectFile()}
+	cmd := []string{"sample-adapter", "--project", projectFile(), "--profile", adapterProfile}
 	if mutant != "" {
 		cmd = append(cmd, "--mutant", mutant)
 	}
 	rep, err := harness.Run(context.Background(), harness.Config{
-		Command: cmd, Mode: mode, Items: sampleItems, SpecDir: dir,
+		Command: cmd, Mode: mode, Profile: judgedAs, Items: sampleItems, SpecDir: dir,
 		Hosts: hosts, Launcher: inProcess{rt: hosts.RoundTripper()}, WorkDir: t.TempDir(),
 	})
 	if err != nil {
@@ -56,7 +69,17 @@ func runInProcess(t *testing.T, mode stubs.Mode, mutant string) harness.Report {
 func failedIDs(rep harness.Report) []string {
 	var ids []string
 	for _, r := range rep.Results {
-		if !r.Pass {
+		if r.Failed() {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+func notApplicableIDs(rep harness.Report) []string {
+	var ids []string
+	for _, r := range rep.Results {
+		if r.NotApplicable {
 			ids = append(ids, r.ID)
 		}
 	}
@@ -115,14 +138,16 @@ var mutantCases = []struct {
 // rule, and exactly that rule's check (and no other) goes red.
 func TestMutantFailsExactlyItsCheck(t *testing.T) {
 	t.Parallel()
-	for _, c := range mutantCases {
-		t.Run(c.mutant, func(t *testing.T) {
-			rep := runInProcess(t, c.mode, c.mutant)
-			got := failedIDs(rep)
-			if rep.Exit != c.exit || len(got) != 1 || got[0] != c.failed {
-				t.Fatalf("want exit %d and only %s red; got exit %d, red %v\n%s", c.exit, c.failed, rep.Exit, got, strings.Join(rep.Lines, "\n"))
-			}
-		})
+	for _, profile := range []string{checks.ProfileLive, checks.ProfileImport} {
+		for _, c := range mutantCases {
+			t.Run(profile+"/"+c.mutant, func(t *testing.T) {
+				rep := runProfile(t, c.mode, profile, c.mutant)
+				got := failedIDs(rep)
+				if rep.Exit != c.exit || len(got) != 1 || got[0] != c.failed {
+					t.Fatalf("want exit %d and only %s red; got exit %d, red %v\n%s", c.exit, c.failed, rep.Exit, got, strings.Join(rep.Lines, "\n"))
+				}
+			})
+		}
 	}
 }
 
@@ -381,14 +406,27 @@ func TestChecksReadTheRecording(t *testing.T) {
 					in.Calls[i].Body = append([]byte(nil), in.Calls[i].Body...)
 				}
 				c.vary(&in)
-				var red []string
-				for _, r := range checks.All(in) {
-					if !r.Pass {
-						red = append(red, r.ID)
+				// Every row is judged under both profiles (review condition C1): under import a failing
+				// recording still fails exactly its check, except traceparent-to-sut, which is not
+				// applicable there and must say so rather than pass.
+				for _, profile := range []string{"", checks.ProfileImport} {
+					in.Profile = profile
+					var red []string
+					for _, r := range checks.All(in) {
+						if r.Failed() {
+							red = append(red, r.ID)
+						}
+						if r.ID == checks.IDTraceparent && profile == checks.ProfileImport && !r.NotApplicable {
+							t.Fatalf("import profile: %s answered pass or fail, want not applicable", r.ID)
+						}
 					}
-				}
-				if len(red) != 1 || red[0] != c.failed {
-					t.Fatalf("want only %s red, got %v", c.failed, red)
+					want := []string{c.failed}
+					if profile == checks.ProfileImport && c.failed == checks.IDTraceparent {
+						want = nil
+					}
+					if !slices.Equal(red, want) {
+						t.Fatalf("profile %q: want only %v red, got %v", profile, want, red)
+					}
 				}
 			})
 		}

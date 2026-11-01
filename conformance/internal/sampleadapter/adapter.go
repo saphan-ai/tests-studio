@@ -3,6 +3,13 @@
 // sample project of test items (a JSON file) rather than a real framework's tests, because the
 // point is to show the calls an adapter makes, not to be an adapter for any framework.
 //
+// It speaks two profiles (spec/TEST_RUNNER_V1.md, section 1.1). The default, live, runs each item
+// between startStep and finishStep. With --profile import it runs every item first, writes a JUnit
+// XML file of their outcomes and durations, and only then reports from that file: for each item,
+// in order, startStep, finishStep with the outcome, the real duration and the failure text read
+// from the file, and the file itself as evidence. An import run hands no test a traceparent, and
+// the adapter never claims that one reached the system under test.
+//
 // It lives in internal/ rather than testdata/ so that `go build ./...` and `go vet ./...` cover
 // it. The sample project itself is in testdata/sample-project/.
 package sampleadapter
@@ -47,6 +54,10 @@ const (
 	MutantRetryRefused     = "retry-refused-call"       // ruling 15: a refused call sent again unchanged
 	MutantEventIDReused    = "event-id-reused"          // ruling 16: one event_id on two different events
 
+	// The profiles of v1.2 (section 1.1 of the specification).
+	ProfileLive   = "live"
+	ProfileImport = "import"
+
 	adapterName      = "sample-adapter"
 	adapterVersion   = "1.0.0"
 	httpTimeout      = 30 * time.Second
@@ -62,12 +73,15 @@ type Project struct {
 
 // Item is one test of the sample project.
 type Item struct {
-	Name     string    `json:"name"`
-	Outcome  string    `json:"outcome"` // pass, fail, error or skip; error stands for an item whose body never ran
-	Failure  string    `json:"failure,omitempty"`
-	CallsSUT bool      `json:"calls_sut,omitempty"`
-	Evidence string    `json:"evidence,omitempty"`
-	Scenario *Scenario `json:"scenario,omitempty"`
+	Name     string `json:"name"`
+	Outcome  string `json:"outcome"` // pass, fail, error or skip; error stands for an item whose body never ran
+	Failure  string `json:"failure,omitempty"`
+	CallsSUT bool   `json:"calls_sut,omitempty"`
+	// DurationMS is how long the item's body takes under --profile import, where the item runs
+	// before the report and its duration travels through the JUnit file; live measures its own.
+	DurationMS int64     `json:"duration_ms,omitempty"`
+	Evidence   string    `json:"evidence,omitempty"`
+	Scenario   *Scenario `json:"scenario,omitempty"`
 }
 
 // Scenario is a mock scenario the item sets before it runs.
@@ -83,6 +97,9 @@ type adapter struct {
 	stderr io.Writer
 	mutant string
 	spec   string
+	// profile is ProfileLive or ProfileImport; evidenceKind is the Tests-Evidence-Kind of an item's evidence.
+	profile      string
+	evidenceKind string
 
 	coreURL  string
 	opened   proto.TestRunOpened
@@ -98,8 +115,13 @@ func Main(args, environ []string, rt http.RoundTripper, stdout, stderr io.Writer
 	fs := flag.NewFlagSet(adapterName, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	projectPath := fs.String("project", "", "path to the sample project file")
+	profile := fs.String("profile", ProfileLive, "live: the items run between startStep and finishStep; import: the items run first and the report is read from a JUnit XML file")
 	mutant := fs.String("mutant", "", "break exactly one rule of the specification (conformance fixture only)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *profile != ProfileLive && *profile != ProfileImport {
+		fmt.Fprintf(stderr, "sample-adapter: --profile is %q; it must be %s or %s\n", *profile, ProfileLive, ProfileImport)
 		return 2
 	}
 	raw, err := os.ReadFile(*projectPath)
@@ -117,7 +139,7 @@ func Main(args, environ []string, rt http.RoundTripper, stdout, stderr io.Writer
 			env[k] = v
 		}
 	}
-	a := &adapter{env: env, client: &http.Client{Transport: rt, Timeout: httpTimeout}, stdout: stdout, stderr: stderr, mutant: *mutant, spec: proto.SpecVersion, started: time.Now().UTC()}
+	a := &adapter{env: env, client: &http.Client{Transport: rt, Timeout: httpTimeout}, stdout: stdout, stderr: stderr, mutant: *mutant, spec: proto.SpecVersion, profile: *profile, evidenceKind: "log", started: time.Now().UTC()}
 	if err := a.run(proj); err != nil {
 		fmt.Fprintln(stderr, "sample-adapter:", err)
 		return 1
@@ -132,6 +154,14 @@ func (a *adapter) run(proj Project) error {
 	}
 	if err := a.negotiate(); err != nil {
 		return err
+	}
+	if a.profile == ProfileImport {
+		// The items run before any step exists; what is reported is what the result file says.
+		imported, err := a.runAndImport(proj)
+		if err != nil {
+			return err
+		}
+		proj.Tests = imported
 	}
 	if err := a.open(proj); err != nil {
 		return err
@@ -242,11 +272,21 @@ func (a *adapter) runItem(i int, stepID string, it Item, counts *proto.Counts) {
 	}
 	counts.Total++
 	a.emit("step.started", stepID, ss.CorrelationID, "step "+it.Name+" started", "", nil)
-	t0 := time.Now()
-	a.setScenario(it)
-	a.callSUT(it, ss)
 	result := it.Outcome
-	duration := time.Since(t0).Milliseconds()
+	var duration int64
+	if a.profile == ProfileImport {
+		// The item ran before this step existed: its duration is the one the result file holds, and
+		// no test could carry the step's traceparent, so none is handed on.
+		duration = it.DurationMS
+		if a.mutant == MutantMockControlDirect {
+			a.setScenario(it) // only the mutant touches a mock here: an import run sets no scenario
+		}
+	} else {
+		t0 := time.Now()
+		a.setScenario(it)
+		a.callSUT(it, ss)
+		duration = time.Since(t0).Milliseconds()
+	}
 	res := proto.StepResult{StepID: &stepID, Result: result, DurationMS: &duration, Failure: it.Failure}
 	if a.mutant == MutantResultNoStepID && i == 0 {
 		// Breaks one rule: a result without its step_id. The core refuses it; the adapter then
@@ -270,7 +310,7 @@ func (a *adapter) runItem(i int, stepID string, it Item, counts *proto.Counts) {
 	// Ruling 6 of v1.1: evidence needs a started step and may be attached once it is finished
 	// (a video or a trace is complete only after the test), so it is attached here.
 	a.attachEvidence(it, stepID, ss.CorrelationID, i == 0)
-	if it.Scenario != nil && a.mutant != MutantMockControlDirect {
+	if it.Scenario != nil && a.mutant != MutantMockControlDirect && a.profile == ProfileLive {
 		a.callMocks("POST", "/reset", nil)
 	}
 }
@@ -323,12 +363,12 @@ func (a *adapter) attachEvidence(it Item, stepID, corr string, first bool) {
 	if a.mutant == MutantEvidenceUnknown && first {
 		hdrStep = "no-such-step" // breaks one rule: evidence for a step that was never started
 	}
-	hdr := map[string]string{proto.HeaderEvidenceKind: "log", proto.HeaderStepID: hdrStep, "Content-Type": "text/plain"}
+	hdr := map[string]string{proto.HeaderEvidenceKind: a.evidenceKind, proto.HeaderStepID: hdrStep, "Content-Type": "text/plain"}
 	if _, err := a.rawCall("PUT", a.testRunURL()+"/evidence/"+declared, a.opened.Credential, hdr, data, nil); err != nil {
 		a.failures++
 		return
 	}
-	a.emit("evidence.stored", stepID, corr, "log evidence stored for step "+stepID, "", map[string]any{"redacted": true, "digest": "sha256:" + hex.EncodeToString(sum[:]), "size": len(data)})
+	a.emit("evidence.stored", stepID, corr, a.evidenceKind+" evidence stored for step "+stepID, "", map[string]any{"redacted": true, "digest": "sha256:" + hex.EncodeToString(sum[:]), "size": len(data)})
 }
 
 // emit posts one tests.event/v1 document. A refused event is counted and never fatal.

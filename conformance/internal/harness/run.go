@@ -31,6 +31,7 @@ const DefaultTimeout = 120 * time.Second
 type Config struct {
 	Command  []string
 	Mode     stubs.Mode
+	Profile  string // checks.ProfileLive (or empty) or checks.ProfileImport
 	Items    int
 	SpecDir  string
 	Timeout  time.Duration
@@ -52,6 +53,9 @@ type Report struct {
 func Run(ctx context.Context, cfg Config) (Report, error) {
 	if cfg.Items < 1 {
 		return Report{Exit: ExitUsage}, errors.New("--items must be the number of test items in the adapter's sample project, 1 or more")
+	}
+	if cfg.Profile != "" && cfg.Profile != checks.ProfileLive && cfg.Profile != checks.ProfileImport {
+		return Report{Exit: ExitUsage}, fmt.Errorf("--profile is %q; it must be %s or %s", cfg.Profile, checks.ProfileLive, checks.ProfileImport)
 	}
 	val, err := schemas.Load(cfg.SpecDir)
 	if err != nil {
@@ -110,7 +114,7 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 		resultRaw = b
 	}
 	input := checks.Input{
-		Calls: calls, Mode: cfg.Mode, Items: cfg.Items, LegRunID: legRun, LegToken: legToken,
+		Calls: calls, Mode: cfg.Mode, Profile: cfg.Profile, Items: cfg.Items, LegRunID: legRun, LegToken: legToken,
 		Served: stack.Served(), Stdout: out.Stdout, Stderr: out.Stderr, ResultRaw: resultRaw, Validator: val,
 	}
 	rep := render(cfg, out, calls, checks.All(input))
@@ -140,14 +144,24 @@ func render(cfg Config, out Output, calls []stubs.Call, results []checks.Result)
 		rep.Exit = ExitRefused
 		return rep
 	}
-	failed := 0
+	failed, na := 0, 0
 	for _, r := range results {
 		rep.Lines = append(rep.Lines, r.Line())
-		if !r.Pass {
+		switch {
+		case r.Failed():
 			failed++
+		case r.NotApplicable:
+			na++
 		}
 	}
-	rep.Lines = append(rep.Lines, fmt.Sprintf("SUMMARY %d checks, %d passed, %d failed (%s mode)", len(results), len(results)-failed, failed, cfg.Mode))
+	if cfg.Profile == checks.ProfileImport {
+		rep.Lines = append(rep.Lines, fmt.Sprintf("SUMMARY %d checks, %d passed, %d failed, %d not applicable (import profile)", len(results), len(results)-failed-na, failed, na))
+	} else {
+		rep.Lines = append(rep.Lines, fmt.Sprintf("SUMMARY %d checks, %d passed, %d failed (%s mode)", len(results), len(results)-failed, failed, cfg.Mode))
+	}
+	if cfg.Profile == checks.ProfileImport {
+		rep.Lines = append(rep.Lines, "remark: under the import profile this run says nothing about whether a test's requests carried a traceparent to the system under test; "+checks.IDTraceparent+" and the stand-in-system half of "+checks.IDComposition+" were not measured")
+	}
 	if out.TimedOut {
 		rep.Lines = append(rep.Lines, "remark: the adapter command was stopped at the timeout; checks that needed what it had not yet done failed for that reason")
 	}

@@ -39,6 +39,7 @@ const (
 type Input struct {
 	Calls     []stubs.Call
 	Mode      stubs.Mode
+	Profile   string // ProfileLive (or empty) or ProfileImport: the profile the adapter is judged under
 	Items     int    // the number of test items in the adapter's sample project
 	LegRunID  string // leg mode: the run id put in the adapter's environment
 	LegToken  string // leg mode: the run credential put in the adapter's environment
@@ -49,19 +50,42 @@ type Input struct {
 	Validator *schemas.Validator
 }
 
-// Result is the outcome of one check.
+// The profiles of v1.2 (specification section 1.1). The zero value of Input.Profile is live.
+const (
+	ProfileLive   = "live"
+	ProfileImport = "import"
+)
+
+// importReason is why, under the import profile, no test could have carried a traceparent.
+const importReason = "the import profile reports after the run, so no test could carry a traceparent"
+
+// Result is the outcome of one check. It has three states: pass (Pass), not applicable
+// (NotApplicable, with the reason in Measured) and failure (neither). A not-applicable result has
+// Pass false, so a caller that only reads Pass never counts it as a pass; Failed is the question
+// "did this check go red".
 type Result struct {
-	ID       string
-	Pass     bool
-	Measured string
+	ID            string
+	Pass          bool
+	NotApplicable bool
+	Measured      string
 }
+
+// Failed reports whether the check went red: it neither passed nor answered not applicable.
+func (r Result) Failed() bool { return !r.Pass && !r.NotApplicable }
 
 // Line renders a result as the one line the runner prints.
 func (r Result) Line() string {
-	if r.Pass {
+	switch {
+	case r.Pass:
 		return "PASS " + r.ID + " — " + r.Measured
+	case r.NotApplicable:
+		return "NOT APPLICABLE " + r.ID + " — " + r.Measured
 	}
 	return "FAIL " + r.ID + " — " + r.Measured
+}
+
+func notApplicable(id, format string, a ...any) Result {
+	return Result{ID: id, NotApplicable: true, Measured: fmt.Sprintf(format, a...)}
 }
 
 func ok(id, format string, a ...any) Result {
@@ -332,6 +356,9 @@ func stepResult(in Input, _ facts) Result {
 }
 
 func traceparent(in Input, f facts) Result {
+	if in.Profile == ProfileImport {
+		return notApplicable(IDTraceparent, "%s", importReason)
+	}
 	byTrace := map[string]proto.StepStarted{}
 	for _, s := range f.issued {
 		byTrace[proto.TraceID(s.Traceparent)] = s
@@ -631,13 +658,17 @@ func sampleComposition(in Input, _ facts) Result {
 		}
 	}
 	sut := count(in, func(c stubs.Call) bool { return c.Service == stubs.ServiceWorld && strings.HasPrefix(c.Path, "/sut/") })
-	if sut == 0 {
+	if sut == 0 && in.Profile != ProfileImport {
 		return fail(IDComposition, "the stand-in system under test received no request; at least one test of the sample project must call it")
 	}
 	for _, want := range []string{"pass", "fail", "skip"} {
 		if seen[want] == 0 {
 			return fail(IDComposition, "no accepted step result is %q; the sample project must hold a passing, a failing and a skipped test (accepted results: %v)", want, seen)
 		}
+	}
+	if in.Profile == ProfileImport {
+		// Only the half about the stand-in system is not applicable; the half about the results held.
+		return notApplicable(IDComposition, "%s; the requests to the stand-in system are not measured (the accepted results do hold %d pass, %d fail, %d skip)", importReason, seen["pass"], seen["fail"], seen["skip"])
 	}
 	return ok(IDComposition, "the accepted results hold %d pass, %d fail, %d skip, and %d requests reached the stand-in system", seen["pass"], seen["fail"], seen["skip"], sut)
 }
