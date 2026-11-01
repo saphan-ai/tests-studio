@@ -1,33 +1,41 @@
 # Tests Studio
 
-**Tests Studio turns a run of tests into a verdict you can check: every test step is tied to what the system under test, and the mocks standing in for its neighbours, really did.**
-This repository holds the public part: the specification any test framework follows to report to Tests Studio, and the conformance suite that tells you whether your adapter follows it.
-If the suite passes against your adapter, your adapter is accepted. You do not need our code, and you do not need our permission.
+<p align="center"><img src="docs/images/banner.png" alt="Tests Studio: what your tests really proved" width="100%"></p>
+
+
+**Tests Studio shows what your tests really proved, in the test framework you already use.**
+It is for any team whose code, and whose tests, now arrive faster than people can check them, often written by AI
+agents. You do not need to know anything about Saphan to read this page or to use what is in it.
 
 ## The problem
 
-A test run says "42 passed". It does not say what the system did while the tests ran, whether the mock that should have answered slowly really answered slowly, or whether the report was written by the run it claims to describe.
+A run that says "42 passed" is easy to produce and hard to trust.
 
-A test framework also reports in its own shape. Every framework you add means another reporter, written again, drifting from the others.
+- **A green run can prove the wrong thing.** An agent fixes a bug and adds ten tests. All ten pass. Take the fix out and
+  run them again: all ten still pass. They were testing something else. A test that passes with the fix removed proves
+  nothing about the fix, and the run does not tell you which kind of test you have.
+- **Results are scattered.** pytest reports in one shape, Playwright in another, Go tests in a third. Each framework needs
+  its own reporter, and there is no one place that shows what ran and what the system did while it ran.
+- **An AI verdict usually leaves no record.** To have a model judge a run, a team puts its own API key into its test
+  code and gets back an opinion. Nothing records what the model was shown, which model it was, or why it decided.
 
-## How it works
+## Try it first (5 minutes)
 
-Tests Studio is one of three parts of one platform. Saphan Studio's fleet writes the code. Mocks Studio supplies mocks that stand in for the real systems around it. Tests Studio runs the tests against those mocks and gives the verdict.
+You need Go 1.26 or newer. No account, no key, and no network after the download.
 
-The three meet on one number: the **correlation id**. For each test the adapter asks Tests Studio to start a step; the answer carries a W3C `traceparent`. The test hands that header to the system under test, the system passes it on, and the mocks record it. At the end the run result carries a digest of every mock event that belongs to the run, so anyone can ask the mocks for those events and recompute it. A mismatch is a refusal, never a pass.
+Four words, so the commands make sense. A **test run** is one go of your tests; each test in it is a **step**. An
+**adapter** is a small plug-in inside a test framework that reports every step. The **conformance suite** plays the
+part of Tests Studio, watches every call an adapter makes, and says whether each call follows the rules.
 
-The piece that makes this work for any framework is the **runner adapter**: a small program or plugin that sits inside a test framework and makes these calls:
+Get the code:
 
-1. ask which specification versions the core serves, and pick one it speaks;
-2. open a test run (or attach to the run of a Saphan leg);
-3. for each test item, start a step, give the `traceparent` to the test, and finish the step with one result;
-4. attach evidence, emit live events, close the run, and publish the run result.
+```
+git clone https://github.com/saphan-ai/tests-studio
+cd tests-studio
+```
 
-The specification in [`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md) says exactly what each call carries and which refusals exist. The conformance suite plays the core and the mocks, watches every call the adapter makes, and prints one `PASS` or `FAIL` line per rule.
-
-## See a real example
-
-The suite ships with a tiny adapter of its own, `sample-adapter`, that reads a four-item sample project (one test passes, one fails, one is skipped, and one never runs its body). Build both, then run the suite against it, in both modes:
+Build the suite and the tiny adapter that comes with it, then let the suite judge that adapter. The adapter runs a
+sample project of four tests: one passes, one fails, one is skipped, and one never gets to run.
 
 ```sh
 go -C conformance build -o ../bin/tests-conformance ./cmd/tests-conformance
@@ -36,60 +44,96 @@ go -C conformance build -o ../bin/sample-adapter ./cmd/sample-adapter
 ./bin/tests-conformance --items 4 --mode leg -- ./bin/sample-adapter --project conformance/testdata/sample-project/tests.json  # needs: listener
 ```
 
-You need Go 1.26 or newer. The suite starts two stand-in servers on your own machine's loopback address, so it needs permission to listen there.
+The suite starts two small stand-in servers on your own machine (address `127.0.0.1`), so it needs permission to
+listen there. Nothing leaves your machine. The second run checks the same adapter joining a run that someone else opened.
 
-What you should see is one line per check, ending in exit code 0:
-
-Measured on 2026-10-30 on an Apple-silicon macOS machine against specification v1.1, the first command,
-unedited (the leg-mode run printed the same fifteen `PASS` lines for leg mode):
+What you will see: one line per rule, fifteen in all, a summary, and exit code 0. Measured on 2026-10-30 on an
+Apple-silicon Mac (abridged):
 
 ```text
 PASS spec-version-known — asked GET /v1/spec (call 1), then declared "v1", which the core serves (v1)
-PASS run-opened — standalone mode: opened test run tr-9ee52519 on run conf-run-9d9ae5
-PASS no-second-run — standalone mode: 1 open, 0 attach and 0 openRun-on-Mocks calls
-PASS step-per-item — 4 test items became 4 steps with unique step_ids, each with exactly one result
-PASS step-result-valid — 4 step results, each one of pass, fail, error, skip with a duration and, where failing, failure text
 PASS traceparent-to-sut — 2 requests reached the system under test, each with exactly the traceparent and baggage the core handed out
-PASS evidence-digest — 2 evidence uploads, each declaring the SHA-256 of its own bytes
-PASS events-valid — 12 events, each valid against tests.event/v1 and carrying this run's ids; kinds run.opened, step.started, step.finished, run.closed all seen
-PASS run-result-schema — the run result validates against tests.run-result/v1, repeats the core's events_digest, and its evidence line is on standard output
 PASS run-result-counts — counts {Total:4 Passed:1 Failed:1 Errored:1 Skipped:1} equal the steps the core saw, and verdict "error" follows from them
-PASS credential-presented — all 25 calls that need a credential presented the credential of their own run
-PASS credential-not-leaked — none of 2 credentials appears in any event, summary, the run result or the adapter's output
 PASS mock-control-bypass — 29 calls observed, none to a mock's own URL; 2 went through the Mocks Studio core
-PASS sample-composition — the accepted results hold 1 pass, 1 fail, 1 skip, and 2 requests reached the stand-in system
-PASS refusal-not-retried — 0 calls were refused by name and none was sent again unchanged
 SUMMARY 15 checks, 15 passed, 0 failed (standalone mode)
-remark: this run measured one adapter run in standalone mode only; run it again in the other mode before claiming either
-remark: the stubs serve one request at a time, so the suite does not measure an adapter's behaviour under concurrent steps
 ```
 
-What the suite prints on a machine that denies loopback was measured and is real. It says so and stops with exit code 4, before any check:
+If your machine forbids listening on `127.0.0.1`, the suite says so and stops with exit code 4 before any check. The
+other exit codes: 1 a check failed, 2 the adapter asked for a version that is not served, 3 the adapter could not start or never reached the suite.
 
-```text
-tests-conformance: cannot listen on loopback: listen tcp 127.0.0.1:0: bind: operation not permitted
+## How it works
+
+This is what works today, in this repository.
+
+1. **Your tests stay in your framework.** An adapter sits inside it and reports every test. The adapter for Go tests is
+   here.
+2. **One open rule book.** Every adapter follows the same published specification, so a run looks the same at the other
+   end, whichever framework produced it.
+3. **Every step is tied to what really happened.** Each step gets a short trace tag (the W3C `traceparent` header). The
+   test passes it to the program under test, which passes it on, and the mocks standing in for its neighbours record
+   it. The run's result carries a fingerprint of everything the mocks recorded, so anyone can fetch it and check it
+   again. A mismatch is a refusal, never a pass.
+4. **One suite judges every adapter.** It prints `PASS` or `FAIL` for each rule. The suite is held to its own standard:
+   deliberately broken copies of its sample adapter, each breaking one rule, must each fail exactly one check.
+
+Tests Studio is one of three parts of one platform: Saphan Studio's agents write the code, Mocks Studio supplies the
+mocks, and Tests Studio runs the tests and gives the verdict.
+
+## What is in this repository
+
+| path | what it is |
+|---|---|
+| [`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md) | the rule book for adapters (document 1.2, wire version `v1`), with every refusal |
+| [`spec/runner-v1.openapi.yaml`](spec/runner-v1.openapi.yaml), [`spec/schemas/`](spec/schemas) | the same calls as OpenAPI 3.1; events and run results as JSON Schema |
+| [`conformance/`](conformance) | the conformance suite, its sample adapter and the four-test sample project |
+| [`adapters/go-test/`](adapters/go-test) | `tests-go-test`, the adapter for Go tests |
+| [`spec/TOOL_RECORD_V1.md`](spec/TOOL_RECORD_V1.md) | a one-file description of how an outside tool (a linter, a secret scanner) is run and what its result means, with its checker `tool-conformance` |
+| [`docscheck/`](docscheck) | the test that keeps this page honest: its commands run, its numbers are recomputed |
+
+## See a real example
+
+Real Go tests, through the Go adapter, judged by the same suite. Run this after "Try it first":
+
+```sh
+go -C adapters/go-test build -o ../../bin/tests-go-test ./cmd/tests-go-test
+(cd adapters/go-test && ../../bin/tests-conformance --items 4 --mode standalone -- ../../bin/tests-go-test ./testdata/sample)  # needs: listener
 ```
 
-The exit codes are 0 (every check passed), 1 (a check failed), 2 (the adapter declared a spec version the core does not serve), 3 (the command could not start or never reached the core) and 4 (the suite could not run).
+It passes when every check prints `PASS` and the exit code is 0. Your own tests stay plain Go tests; the helper package
+`tracectx` puts each step's trace tag on your test's requests. Details: [`adapters/go-test/README.md`](adapters/go-test/README.md).
 
 ## Make your test framework report to Tests Studio
 
-1. Read [`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md). It is the rules for you, written for someone who has never seen our core.
-2. Write the adapter in your framework's own language. Its behaviour is the specification; nothing here is a library to link.
-3. Make a small sample project in that framework with a passing, a failing and a skipped test. At least one test must call the stand-in system under test at `$TESTS_CONFORMANCE_SUT_URL` with the `traceparent` and `baggage` headers its step was given.
-4. Build the suite and run it against your adapter, once in each mode:
+1. Read [`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md). It is written for someone who has never seen our code.
+2. Write the adapter in your framework's own language. There is no library to link: the rules are the product.
+3. Make a sample project with a passing, a failing and a skipped test. At least one test calls the stand-in program at
+   `$TESTS_CONFORMANCE_SUT_URL` with the `traceparent` and `baggage` headers its step was given.
+4. Run the suite against your adapter, once in each mode:
 
 ```sh
-go -C conformance build -o ../bin/tests-conformance ./cmd/tests-conformance
 ./bin/tests-conformance --items 4 --mode standalone -- <your adapter command> <its arguments>  # needs: adapter
 ./bin/tests-conformance --items 4 --mode leg -- <your adapter command> <its arguments>  # needs: adapter
 ```
 
-`--items` is the number of tests in your sample project. The adapter runs in a scrubbed environment: only the variables the specification lists reach it. If your framework needs another (`PYTHONPATH`, say), name it with `--pass-env PYTHONPATH`.
+`--items` is the number of tests in your sample project. If your framework can only report after the run (from a JUnit
+XML file, say), add `--profile import`. If the adapter needs an extra environment variable, name it with `--pass-env`.
 
-5. **Your adapter is accepted when every check passes in both modes.** Open an issue or a pull request to have it listed here; see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+5. **Your adapter is accepted when every check passes in both modes.** To have it listed here, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-Reference adapters for Go's `testing`, pytest and Playwright are planned. None has landed in this repository yet.
+## What it will be
+
+- **More adapters**: pytest (with Appium, for phone apps) and Playwright, judged by the same suite as the Go adapter.
+- **The Tests Studio core, in Saphan Studio**: runs on a schedule or on demand, every result and every piece of evidence
+  kept, live progress, and mocks set up for each run through Mocks Studio.
+- **AI helpers on your own model subscription**: they plan tests, explore the app, explain failures and write the
+  report, and every call they make is recorded.
+- **A passing run as proof that work is done**: checked by its fingerprint, by anyone, later.
+
+## How it will be built
+
+In small steps. An adapter is added to this repository only when the conformance suite passes against it in both
+modes, and is listed here only then. The core stays closed and lives in Saphan Studio; this repository stays enough on
+its own to write and check an adapter. When a part lands, it moves from this section to "How it works".
 
 ## What is measured
 
@@ -100,61 +144,57 @@ Each number below is recomputed from its command by the documentation check on e
 - **20** refusal reason codes the specification names for the core: `sed -n '/Reason codes of the Tests Studio core/,/^A call made/p' spec/TEST_RUNNER_V1.md | grep -o '[^ a-z|][a-z]*-[a-z-]*[^ a-z|]' | wc -l`
 - **4** tests in the sample project (pass, fail, skip, and one whose body never runs): `grep -c '"outcome"' conformance/testdata/sample-project/tests.json`
 
-What is not here, because it is not measured on this page: how fast the suite runs, and how many adapters pass it. The count of tests in the suite's own test run depends on whether the machine allows loopback, so it is not a fixed number and none is printed here.
+What is not here, because it is not measured on this page: how fast the suite runs, and how many adapters pass it.
 
 ## Honest limits
 
-Updated with every push to this repository. Last measured 2026-10-30.
+Updated with every push to this repository. Last read against the tree on 2026-11-02.
 
-- **No reference adapter has landed.** The Go test reporter, the pytest plugin and the Playwright reporter are planned; today the only adapter here is the suite's own `sample-adapter`, which reads a JSON file rather than a real framework's tests.
-- **The suite needs loopback.** It starts its stand-in servers on `127.0.0.1`. Where that is denied it exits 4, and the suite's own tests that use real sockets skip themselves. Continuous integration must set `TESTS_CONFORMANCE_REQUIRE_SOCKETS=1` so that a skipped measurement fails instead of passing quietly.
-- **The real-output example above was not run for this page.** The machine it was written on denies loopback. The marked place stays marked until a run on a machine that allows loopback is pasted in.
-- **On Windows the timeout kills only the adapter's own process.** On Unix the suite kills the whole process group (specification section 12), so a test worker or browser the adapter started dies with it. Anywhere else only the direct child is killed; the suite then waits at most `--wait-delay` for any descendant that still holds the output, and closes the pipes. A runaway grandchild can outlive the run there.
-- **The suite checks the calls an adapter makes, not whether it is a good adapter.** An adapter that passes makes the right calls with the right shapes; it can still report a framework's results wrongly. The checks are listed in the specification.
-- **The core is not here.** The suite plays a recording core and a stand-in Mocks Studio core. A pass shows your adapter speaks the specification, not that it works against the real core.
+- **There is no public core yet.** The suite plays the core. A pass shows an adapter follows the rules, not that it
+  works against the real core, or that it reports your framework's results correctly.
+- **The Go adapter runs each test on its own**, so budget about a second per test. Its README gives the measured cost.
+- **The `import` profile cannot tie a step to the program under test**: the test has already run. The suite cannot
+  check which profile an adapter really uses, so a claim of conformance names its profile.
+- **The suite needs to listen on `127.0.0.1`.** Where that is denied it exits 4. In CI, set
+  `TESTS_CONFORMANCE_REQUIRE_SOCKETS=1` so a skipped measurement fails instead of passing quietly.
+- **On Windows a timeout stops only the adapter itself**; a test worker it started can outlive the run.
+- **`tool-conformance` does not fence in the tool it runs** and does not watch its network.
 - **Specification v1 only.** A new optional field keeps `v1`; a new required field, a removed one or a changed meaning is `v2`.
 
 ## Built in public
 
-The specification and its conformance suite are public so that anyone can write an adapter and know, without asking us, whether it is right. They were written by Saphan Studio's own fleet of agents under a human owner, and reviewed before they landed. Every weakness found in the suite, and the commit that fixed it, is named in [`SECURITY.md`](SECURITY.md).
-
-Problems and questions go to the issue tracker of this repository. A vulnerability goes to the private channel in [`SECURITY.md`](SECURITY.md), never to a public issue.
+The rule book and its suite are public so that anyone can write an adapter and know, without asking us, whether it is
+right. They were written and reviewed in Saphan Studio, under a human owner. Every weakness found in the suite, and the
+commit that fixed it, is in [`SECURITY.md`](SECURITY.md). Questions go to the issue tracker; a vulnerability goes to the
+private channel in [`SECURITY.md`](SECURITY.md), never to a public issue.
 
 ## Repository layout
 
-```text
-spec/                       the specification and its schemas
-  TEST_RUNNER_V1.md         the rules an adapter follows
-  runner-v1.openapi.yaml    the calls of section 6, as OpenAPI 3.1
-  schemas/                  tests.event/v1 and tests.run-result/v1
-  ecosystem-v1/             copies of the shared contract with Mocks Studio; do not edit
-conformance/                the Go module of the conformance suite
-  cmd/tests-conformance/    the suite's command
-  cmd/sample-adapter/       the fixture adapter every check passes against
-  internal/                 the harness, the stand-in servers, the checks
-  testdata/sample-project/  the four-item sample project
-docscheck/                  the test that keeps these documents honest
-LICENSE, LICENSE-docs       the two licences
-```
-
-The core of Tests Studio (storage, scheduling, the console) is closed and not in this repository.
-
-**Licences.** The code in this repository (`conformance/`, `docscheck/`) is Apache-2.0: see [`LICENSE`](LICENSE). The documents and the specification (`README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `spec/`) are CC BY 4.0: see [`LICENSE-docs`](LICENSE-docs). The files under `spec/ecosystem-v1/` are copies of a shared contract and are covered by the same CC BY 4.0 licence.
+The table under "What is in this repository" names every top-level part. Inside them: `conformance/cmd/` holds
+`tests-conformance`, `sample-adapter` and `tool-conformance`; `conformance/internal/` the harness, the stand-in servers
+and the checks; `conformance/testdata/` the sample project and the tool fixtures; `spec/ecosystem-v1/` copies of the
+contract shared with Mocks Studio (do not edit).
 
 ## Documentation
 
-- [`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md): the specification, start to finish.
-- [`SECURITY.md`](SECURITY.md): what the suite treats as untrusted and what it protects, and how to report a vulnerability.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): how to report a problem, add an adapter or change this repository.
+The two specifications ([`spec/TEST_RUNNER_V1.md`](spec/TEST_RUNNER_V1.md), [`spec/TOOL_RECORD_V1.md`](spec/TOOL_RECORD_V1.md)),
+the Go adapter ([`adapters/go-test/README.md`](adapters/go-test/README.md)), what the suite treats as untrusted and how to
+report a vulnerability ([`SECURITY.md`](SECURITY.md)), and how to add an adapter ([`CONTRIBUTING.md`](CONTRIBUTING.md)).
 
 ## For technical readers
 
-- The suite is a Go module, `github.com/saphan-ai/tests-studio/conformance`, whose only dependencies are a JSON Schema validator and a YAML reader. It needs Go 1.26 or newer.
-- The adapter is started as a child process in its own process group, with a scrubbed environment, and bounded by `--timeout` (default 120 seconds).
-- The checks read a recording of every call the adapter made to the two stand-in servers. A check that measures something the adapter must do fails when there is nothing to measure; a check that measures something it must not do passes only after counting the calls it looked at.
-- The tests of the suite itself run with the commands below. The first runs the suite's own tests; the second runs the documentation check that reads this page.
+The suite is the Go module `github.com/saphan-ai/tests-studio/conformance` (dependencies: a JSON Schema validator and a
+YAML reader). The adapter runs as a child process in its own process group, with a scrubbed environment, bounded by
+`--timeout` (default 120 seconds). A check of something the adapter must do fails when there is nothing to measure; a
+check of something it must not do passes only after counting the calls it looked at.
 
 ```sh
 go -C conformance test ./... -count=1
 go -C docscheck test ./... -count=1  # needs: self
 ```
+
+## Licence
+
+The code (`conformance/`, `adapters/`, `docscheck/`) is Apache-2.0: see [`LICENSE`](LICENSE). The documents and the
+specification (`README.md`, `SECURITY.md`, `CONTRIBUTING.md`, `spec/`, including the copies under `spec/ecosystem-v1/`)
+are CC BY 4.0: see [`LICENSE-docs`](LICENSE-docs).
