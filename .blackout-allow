@@ -1,0 +1,5 @@
+# path[:line] rule-id reason
+adapters/go-test/go.sum secret-entropy module checksums (h1: base64 of SHA-256) are public hashes, not secrets
+conformance/go.sum secret-entropy module checksums (h1: base64 of SHA-256) are public hashes, not secrets
+adapters/go-test/reporter/reporter_test.go:395 secret-entropy a long Go test function name, not a secret
+conformance/testdata/tool-fixtures/secret-synthetic/app.conf:3 secret-entropy the fixture's deliberately synthetic token (TSFIXTURE-SYNTHETIC-…), which the tool conformance suite's secret check must find
